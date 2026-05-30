@@ -32,6 +32,10 @@ LOCK_FILE = Path(os.getenv("ORDER_WORKER_LOCK_FILE", PROJECT_ROOT / "order-worke
 
 INTRANET_API_URL = os.getenv("INTRANET_API_URL", "http://localhost:3001/api/order-import")
 INTRANET_LOG_API_URL = os.getenv("INTRANET_LOG_API_URL", "http://localhost:3001/api/order-import/log")
+INTRANET_INVOICE_EXPORT_API_URL = os.getenv(
+    "INTRANET_INVOICE_EXPORT_API_URL",
+    "http://localhost:3001/api/invoice-export/file",
+)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -44,4 +48,3 @@ HEADLESS = os.getenv("ORDER_WORKER_HEADLESS", "1").lower() not in {"0", "false",
 def ensure_directories() -> None:
     for path in (DOWNLOAD_DIR, ARCHIVE_DIR, LOG_DIR):
         path.mkdir(parents=True, exist_ok=True)
-

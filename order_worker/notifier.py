@@ -46,3 +46,32 @@ def build_summary_message(results: list[dict], run_id: str) -> str:
             lines.append(f"성공 - {site}: 등록 {inserted}건 / 중복 {duplicate}건")
 
     return "\n".join(lines)[:3500]
+
+
+def build_invoice_upload_summary_message(results: list[dict], run_id: str) -> str:
+    failed = [item for item in results if not item.get("success")]
+    title = "일부 실패" if failed else "완료"
+    total_uploaded = sum(int(item.get("uploadedCount") or 0) for item in results if item.get("success"))
+    total_failed = sum(int(item.get("failedCount") or 0) for item in results)
+    lines = [
+        f"[송장 업로드] {title}",
+        f"ID: {run_id}",
+        f"업로드: {total_uploaded}건 / 실패: {total_failed}건",
+        "",
+    ]
+
+    for item in results:
+        site = item.get("site", "?")
+        if not item.get("success"):
+            error = shorten(item.get("error", "알 수 없는 오류"))
+            lines.append(f"실패 - {site}: {error}")
+            continue
+
+        uploaded = int(item.get("uploadedCount") or 0)
+        failed_count = int(item.get("failedCount") or 0)
+        if item.get("preview"):
+            lines.append(f"확인 - {site}: preview")
+        else:
+            lines.append(f"완료 - {site}: 업로드 {uploaded}건 / 실패 {failed_count}건")
+
+    return "\n".join(lines)[:3500]

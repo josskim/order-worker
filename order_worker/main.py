@@ -10,8 +10,19 @@ import requests
 
 from order_worker import config
 from order_worker.lock import WorkerLock
-from order_worker.notifier import build_summary_message, send_telegram_message
-from order_worker.sites import domeggook, domesin, onchannel, ownerclan, specialoffer
+from order_worker.notifier import build_invoice_upload_summary_message, build_summary_message, send_telegram_message
+from order_worker.sites import (
+    domeggook,
+    domeggook_invoice,
+    domesin,
+    domesin_invoice,
+    onchannel,
+    onchannel_invoice,
+    ownerclan,
+    ownerclan_invoice,
+    specialoffer,
+    specialoffer_invoice,
+)
 
 
 SITE_RUNNERS = {
@@ -22,6 +33,23 @@ SITE_RUNNERS = {
     "domesin": domesin.run,
 }
 
+INVOICE_UPLOAD_SITES = {
+    "ownerclan": "오너클랜",
+    "Fownerclan": "F오너클랜",
+    "onch3": "온채널",
+    "Fonch3": "F온채널",
+    "domeggook": "도매꾹",
+    "Fdomeggook": "F도매꾹",
+    "domegod": "도매의신",
+    "special": "스페셜오퍼",
+}
+
+OWNERCLAN_INVOICE_SITES = {"ownerclan", "Fownerclan"}
+ONCHANNEL_INVOICE_SITES = {"onch3", "Fonch3"}
+DOMEGGOOK_INVOICE_SITES = {"domeggook", "Fdomeggook"}
+DOMESIN_INVOICE_SITES = {"domegod"}
+SPECIALOFFER_INVOICE_SITES = {"special"}
+
 
 def format_result(result: dict) -> str:
     site = result.get("site", "?")
@@ -30,6 +58,13 @@ def format_result(result: dict) -> str:
     if result.get("totalRows", 0) == 0:
         return f"[EMPTY] {site}: no orders"
     return f"[OK] {site}: inserted {result.get('insertedCount', 0)}, duplicate {result.get('duplicateCount', 0)}"
+
+
+def format_invoice_upload_result(result: dict) -> str:
+    site = result.get("site", "?")
+    if not result.get("success"):
+        return f"[FAIL] {site}: {result.get('error', 'unknown error')}"
+    return f"[OK] {site}: uploaded {result.get('uploadedCount', 0)}, failed {result.get('failedCount', 0)}"
 
 
 def cleanup_downloads() -> None:
@@ -99,6 +134,60 @@ async def run_command(args: argparse.Namespace) -> int:
     return 1 if any(not item.get("success") for item in results) else 0
 
 
+async def upload_invoices_command(args: argparse.Namespace) -> int:
+    config.ensure_directories()
+    site_names = list(INVOICE_UPLOAD_SITES.keys()) if args.all else args.site
+    today = datetime.now().strftime("%Y-%m-%d")
+    start_date = args.start_date or today
+    end_date = args.end_date or start_date
+    run_id = str(uuid.uuid4())[:8]
+
+    with WorkerLock(config.LOCK_FILE):
+        print(
+            f"PROGRESS: [invoice-upload] run_id={run_id}, type={args.type}, "
+            f"date={start_date}~{end_date}, preview={args.preview}"
+        )
+        results = []
+        ownerclan_sites = [site for site in site_names if site in OWNERCLAN_INVOICE_SITES]
+        onchannel_sites = [site for site in site_names if site in ONCHANNEL_INVOICE_SITES]
+        domeggook_sites = [site for site in site_names if site in DOMEGGOOK_INVOICE_SITES]
+        domesin_sites = [site for site in site_names if site in DOMESIN_INVOICE_SITES]
+        specialoffer_sites = [site for site in site_names if site in SPECIALOFFER_INVOICE_SITES]
+        if ownerclan_sites:
+            results.extend(
+                await ownerclan_invoice.run(ownerclan_sites, args.type, start_date, end_date, preview=args.preview)
+            )
+        if onchannel_sites:
+            results.extend(
+                await onchannel_invoice.run(onchannel_sites, args.type, start_date, end_date, preview=args.preview)
+            )
+        if domeggook_sites:
+            results.extend(
+                await domeggook_invoice.run(domeggook_sites, args.type, start_date, end_date, preview=args.preview)
+            )
+        if domesin_sites:
+            results.extend(
+                await domesin_invoice.run(domesin_sites, args.type, start_date, end_date, preview=args.preview)
+            )
+        if specialoffer_sites:
+            results.extend(
+                await specialoffer_invoice.run(specialoffer_sites, args.type, start_date, end_date, preview=args.preview)
+            )
+
+    for result in results:
+        print(format_invoice_upload_result(result))
+
+    write_log(f"invoice-upload-{run_id}", results)
+    try:
+        send_telegram_message(build_invoice_upload_summary_message(results, run_id))
+    except Exception as exc:
+        print(f"PROGRESS: [telegram] send failed: {exc}")
+
+    print("__JSON__")
+    print(json.dumps(results, ensure_ascii=False))
+    return 1 if any(not item.get("success") for item in results) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="order-worker")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -107,6 +196,15 @@ def build_parser() -> argparse.ArgumentParser:
     group = run_parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--all", action="store_true", help="Run all sites")
     group.add_argument("--site", action="append", choices=sorted(SITE_RUNNERS.keys()), help="Run selected site")
+
+    invoice_parser = subparsers.add_parser("upload-invoices", help="Upload invoice Excel files to vendor sites")
+    invoice_group = invoice_parser.add_mutually_exclusive_group(required=True)
+    invoice_group.add_argument("--all", action="store_true", help="Run all supported invoice upload sites")
+    invoice_group.add_argument("--site", action="append", choices=sorted(INVOICE_UPLOAD_SITES.keys()), help="Run selected site")
+    invoice_parser.add_argument("--type", choices=["real", "fake"], default="real", help="Invoice export type")
+    invoice_parser.add_argument("--start-date", help="Start date in YYYY-MM-DD. Defaults to today.")
+    invoice_parser.add_argument("--end-date", help="End date in YYYY-MM-DD. Defaults to start date.")
+    invoice_parser.add_argument("--preview", action="store_true", help="Upload Excel and stop before final shipping registration.")
 
     subparsers.add_parser("sites", help="List supported sites")
     return parser
@@ -124,10 +222,12 @@ def main() -> int:
     if args.command == "run":
         return asyncio.run(run_command(args))
 
+    if args.command == "upload-invoices":
+        return asyncio.run(upload_invoices_command(args))
+
     parser.print_help()
     return 2
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
