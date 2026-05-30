@@ -1,0 +1,15 @@
+[project]
+name = "order-worker"
+version = "0.1.0"
+description = "Local worker for collecting vendor order Excel files and uploading them to intranet."
+requires-python = ">=3.11"
+dependencies = [
+  "playwright>=1.56.0",
+  "requests>=2.32.0",
+]
+
+[project.scripts]
+order-worker = "order_worker.main:main"
+
+[tool.setuptools.packages.find]
+include = ["order_worker*"]

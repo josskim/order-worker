@@ -1,0 +1,2 @@
+"""Local order collection worker."""
+
