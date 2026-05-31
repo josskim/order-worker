@@ -207,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     invoice_parser.add_argument("--preview", action="store_true", help="Upload Excel and stop before final shipping registration.")
 
     subparsers.add_parser("sites", help="List supported sites")
+    subparsers.add_parser("invoice-sites", help="List supported invoice upload sites")
     return parser
 
 
@@ -217,6 +218,11 @@ def main() -> int:
     if args.command == "sites":
         for site_name in SITE_RUNNERS:
             print(site_name)
+        return 0
+
+    if args.command == "invoice-sites":
+        for site_name, label in INVOICE_UPLOAD_SITES.items():
+            print(f"{site_name}\t{label}")
         return 0
 
     if args.command == "run":
