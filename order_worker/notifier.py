@@ -33,8 +33,9 @@ def build_summary_message(results: list[dict], run_id: str) -> str:
     for item in results:
         site = item.get("site", "?")
         if not item.get("success"):
-            error = shorten(item.get("error", "알 수 없는 오류"))
-            lines.append(f"실패 - {site}: {error}")
+            error = shorten(item.get("error") or item.get("message") or "알 수 없는 오류")
+            prefix = "중단" if item.get("cancelRequest") else "실패"
+            lines.append(f"{prefix} - {site}: {error}")
             continue
 
         total = item.get("totalRows", 0)
@@ -63,8 +64,9 @@ def build_invoice_upload_summary_message(results: list[dict], run_id: str) -> st
     for item in results:
         site = item.get("site", "?")
         if not item.get("success"):
-            error = shorten(item.get("error", "알 수 없는 오류"))
-            lines.append(f"실패 - {site}: {error}")
+            error = shorten(item.get("error") or item.get("message") or "알 수 없는 오류")
+            prefix = "중단" if item.get("cancelRequest") else "실패"
+            lines.append(f"{prefix} - {site}: {error}")
             continue
 
         uploaded = int(item.get("uploadedCount") or 0)

@@ -63,7 +63,8 @@ def format_result(result: dict) -> str:
 def format_invoice_upload_result(result: dict) -> str:
     site = result.get("site", "?")
     if not result.get("success"):
-        return f"[FAIL] {site}: {result.get('error', 'unknown error')}"
+        prefix = "STOP" if result.get("cancelRequest") else "FAIL"
+        return f"[{prefix}] {site}: {result.get('error') or result.get('message') or 'unknown error'}"
     return f"[OK] {site}: uploaded {result.get('uploadedCount', 0)}, failed {result.get('failedCount', 0)}"
 
 

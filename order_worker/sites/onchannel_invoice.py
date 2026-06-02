@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from playwright.async_api import Page, async_playwright
@@ -39,6 +40,15 @@ async def set_checked(page: Page, selector: str) -> None:
         }""",
         selector,
     )
+
+
+def build_cancel_request_message(text: str) -> str:
+    matches = re.findall(r"\b([A-Z]{2}_\d+)\s*/\s*(\d+)\s*/\s*(\d+)", text)
+    if not matches:
+        return "취소 요청건이 있어 온채널 송장 업로드를 중단했습니다."
+
+    orders = ", ".join(f"{order_code}/{delivery_code}/{tracking_no}" for order_code, delivery_code, tracking_no in matches)
+    return f"취소 요청건이 있어 온채널 송장 업로드를 중단했습니다. 취소 요청: {orders}"
 
 
 async def stage_invoice_file(page: Page, file_path: Path, label: str) -> Page:
@@ -80,8 +90,23 @@ async def submit_invoice_popup(popup: Page, label: str) -> dict:
     await popup.locator("button.st").first.click(timeout=15000)
 
     try:
-        if await popup.locator(".cancel_order_modal:visible").count() > 0:
-            await popup.click("#registTrackingNum", timeout=5000)
+        await popup.wait_for_function(
+            """() => {
+                const text = document.body?.innerText || "";
+                return text.includes("취소 요청 건에도") || text.includes("취소 요청 승인 송장번호 등록") || text.includes("처리중");
+            }""",
+            timeout=5000,
+        )
+        body_text = await popup.locator("body").inner_text(timeout=5000)
+        if "취소 요청 건에도" in body_text or "취소 요청 승인 송장번호 등록" in body_text:
+            print(f"PROGRESS: [{label}] 취소 요청건 감지: 송장 업로드 중단")
+            return {
+                "success": False,
+                "uploadedCount": 0,
+                "failedCount": 0,
+                "message": build_cancel_request_message(body_text),
+                "cancelRequest": True,
+            }
     except Exception:
         pass
 
@@ -89,6 +114,13 @@ async def submit_invoice_popup(popup: Page, label: str) -> dict:
         text = await asyncio.wait_for(dialog_future, timeout=90)
     except asyncio.TimeoutError:
         try:
+            await popup.wait_for_function(
+                """() => {
+                    const text = document.body?.innerText || "";
+                    return !text.includes("처리중") || text.includes("완료") || text.includes("성공") || text.includes("실패");
+                }""",
+                timeout=30000,
+            )
             text = await popup.locator("body").inner_text(timeout=5000)
         except Exception:
             text = ""
