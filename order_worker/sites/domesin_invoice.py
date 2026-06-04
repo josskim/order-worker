@@ -66,6 +66,10 @@ def parse_result(text: str) -> dict:
     failed_match = re.search(r"(?:실패|오류|에러)\s*[:：]?\s*([0-9,]+)\s*건", text)
     uploaded = int(success_match.group(1).replace(",", "")) if success_match else 0
     failed = int(failed_match.group(1).replace(",", "")) if failed_match else 0
+    if not uploaded:
+        uploaded = len(re.findall(r"\t성공(?:\s|$)", text))
+    if not failed:
+        failed = len(re.findall(r"\t(?:실패|오류|에러)(?:\s|$)", text))
 
     return {
         "success": failed == 0,
