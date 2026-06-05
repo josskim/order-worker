@@ -20,6 +20,7 @@ from order_worker.sites import (
     onchannel_invoice,
     ownerclan,
     ownerclan_invoice,
+    sister,
     sister_invoice,
     specialoffer,
     specialoffer_invoice,
@@ -32,6 +33,7 @@ SITE_RUNNERS = {
     "domeggook": domeggook.run,
     "specialoffer": specialoffer.run,
     "domesin": domesin.run,
+    "sister": sister.run,
 }
 
 INVOICE_UPLOAD_SITES = {

@@ -41,6 +41,11 @@ SISTER_INVOICE_UPLOAD_API_URL = os.getenv(
     "http://localhost:3000/api/seller/invoice-upload",
 )
 SISTER_INVOICE_UPLOAD_TOKEN = os.getenv("SISTER_INVOICE_UPLOAD_TOKEN", "")
+SISTER_ORDER_EXPORT_API_URL = os.getenv(
+    "SISTER_ORDER_EXPORT_API_URL",
+    "http://localhost:3000/api/seller/orders/export",
+)
+SISTER_ORDER_EXPORT_TOKEN = os.getenv("SISTER_ORDER_EXPORT_TOKEN", "")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
