@@ -20,6 +20,7 @@ from order_worker.sites import (
     onchannel_invoice,
     ownerclan,
     ownerclan_invoice,
+    sister_invoice,
     specialoffer,
     specialoffer_invoice,
 )
@@ -44,11 +45,14 @@ INVOICE_UPLOAD_SITES = {
     "special": "스페셜오퍼",
 }
 
+INVOICE_UPLOAD_SITES["sister"] = "시스터"
+
 OWNERCLAN_INVOICE_SITES = {"ownerclan", "Fownerclan"}
 ONCHANNEL_INVOICE_SITES = {"onch3", "Fonch3"}
 DOMEGGOOK_INVOICE_SITES = {"domeggook", "Fdomeggook"}
 DOMESIN_INVOICE_SITES = {"domegod"}
 SPECIALOFFER_INVOICE_SITES = {"special"}
+SISTER_INVOICE_SITES = {"sister"}
 
 
 def format_result(result: dict) -> str:
@@ -154,6 +158,7 @@ async def upload_invoices_command(args: argparse.Namespace) -> int:
         domeggook_sites = [site for site in site_names if site in DOMEGGOOK_INVOICE_SITES]
         domesin_sites = [site for site in site_names if site in DOMESIN_INVOICE_SITES]
         specialoffer_sites = [site for site in site_names if site in SPECIALOFFER_INVOICE_SITES]
+        sister_sites = [site for site in site_names if site in SISTER_INVOICE_SITES]
         if ownerclan_sites:
             results.extend(
                 await ownerclan_invoice.run(ownerclan_sites, args.type, start_date, end_date, preview=args.preview)
@@ -173,6 +178,10 @@ async def upload_invoices_command(args: argparse.Namespace) -> int:
         if specialoffer_sites:
             results.extend(
                 await specialoffer_invoice.run(specialoffer_sites, args.type, start_date, end_date, preview=args.preview)
+            )
+        if sister_sites:
+            results.extend(
+                await sister_invoice.run(sister_sites, args.type, start_date, end_date, preview=args.preview)
             )
 
     for result in results:
