@@ -134,8 +134,8 @@ def parse_success_fail_counts(text: str) -> tuple[int | None, int | None]:
     success_count = None
     failed_count = None
 
-    success_match = re.search(r"성공\s*([0-9,]+)\s*건", text)
-    failed_match = re.search(r"실패\s*([0-9,]+)\s*건", text)
+    success_match = re.search(r"성공\s*[:：]?\s*([0-9,]+)(?:\s*건)?", text)
+    failed_match = re.search(r"실패\s*[:：]?\s*([0-9,]+)(?:\s*건)?", text)
     if success_match:
         success_count = int(success_match.group(1).replace(",", ""))
     if failed_match:

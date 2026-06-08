@@ -64,6 +64,9 @@ async def submit_upload(frame, label: str) -> dict:
 
     text = await frame.locator("body").inner_text(timeout=10000)
     success_count, failed_count = parse_success_fail_counts(text)
+    if success_count is None or failed_count is None:
+        raise RuntimeError(f"송장 업로드 결과 건수를 확인하지 못했습니다: {text[:500]}")
+
     success_count = success_count or 0
     failed_count = failed_count or 0
 
