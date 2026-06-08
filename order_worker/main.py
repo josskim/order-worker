@@ -25,6 +25,7 @@ from order_worker.sites import (
     specialoffer,
     specialoffer_invoice,
 )
+from order_worker.sites.invoice_utils import mark_invoice_uploaded
 
 
 SITE_RUNNERS = {
@@ -72,6 +73,39 @@ def format_invoice_upload_result(result: dict) -> str:
         prefix = "STOP" if result.get("cancelRequest") else "FAIL"
         return f"[{prefix}] {site}: {result.get('error') or result.get('message') or 'unknown error'}"
     return f"[OK] {site}: uploaded {result.get('uploadedCount', 0)}, failed {result.get('failedCount', 0)}"
+
+
+def normalize_invoice_no_data_results(results: list[dict]) -> None:
+    for result in results:
+        error = str(result.get("error") or "")
+        if error.startswith("No invoice data for "):
+            result["success"] = True
+            result["uploadedCount"] = 0
+            result["failedCount"] = 0
+            result["noData"] = True
+            result["message"] = "업로드할 송장 데이터가 없습니다."
+            result.pop("error", None)
+
+
+def mark_successful_invoice_uploads(results: list[dict], export_type: str, start_date: str, end_date: str) -> None:
+    for result in results:
+        if not result.get("success") or result.get("preview") or result.get("noData"):
+            continue
+        if int(result.get("uploadedCount") or 0) <= 0:
+            continue
+        site_code = result.get("siteCode")
+        if not site_code:
+            continue
+        failed_order_numbers = [
+            str(item.get("orderNumber") or "")
+            for item in result.get("failedOrders", [])
+            if item.get("orderNumber")
+        ]
+        try:
+            mark_result = mark_invoice_uploaded(site_code, export_type, start_date, end_date, failed_order_numbers)
+            result["markedUploadedCount"] = mark_result.get("markedCount", 0)
+        except Exception as exc:
+            result["markUploadedError"] = str(exc)
 
 
 def cleanup_downloads() -> None:
@@ -185,6 +219,10 @@ async def upload_invoices_command(args: argparse.Namespace) -> int:
             results.extend(
                 await sister_invoice.run(sister_sites, args.type, start_date, end_date, preview=args.preview)
             )
+
+    normalize_invoice_no_data_results(results)
+    if not args.preview:
+        mark_successful_invoice_uploads(results, args.type, start_date, end_date)
 
     for result in results:
         print(format_invoice_upload_result(result))

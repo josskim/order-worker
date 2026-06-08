@@ -36,6 +36,10 @@ INTRANET_INVOICE_EXPORT_API_URL = os.getenv(
     "INTRANET_INVOICE_EXPORT_API_URL",
     "http://localhost:3001/api/invoice-export/file",
 )
+INTRANET_INVOICE_UPLOAD_MARK_API_URL = os.getenv(
+    "INTRANET_INVOICE_UPLOAD_MARK_API_URL",
+    "http://localhost:3001/api/invoice-export/mark-uploaded",
+)
 SISTER_INVOICE_UPLOAD_API_URL = os.getenv(
     "SISTER_INVOICE_UPLOAD_API_URL",
     "http://localhost:3000/api/seller/invoice-upload",

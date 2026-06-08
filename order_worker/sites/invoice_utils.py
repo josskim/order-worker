@@ -13,6 +13,10 @@ import requests
 from order_worker import config
 
 
+class NoInvoiceDataError(RuntimeError):
+    pass
+
+
 def _filename_from_content_disposition(value: str | None) -> str | None:
     if not value:
         return None
@@ -28,7 +32,14 @@ def _filename_from_content_disposition(value: str | None) -> str | None:
     return None
 
 
-def download_invoice_export(site: str, export_type: str, start_date: str, end_date: str) -> Path:
+def download_invoice_export(
+    site: str,
+    export_type: str,
+    start_date: str,
+    end_date: str,
+    *,
+    exclude_uploaded: bool = True,
+) -> Path:
     config.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     response = requests.get(
         config.INTRANET_INVOICE_EXPORT_API_URL,
@@ -37,9 +48,12 @@ def download_invoice_export(site: str, export_type: str, start_date: str, end_da
             "type": export_type,
             "startDate": start_date,
             "endDate": end_date,
+            "excludeUploaded": "1" if exclude_uploaded else "0",
         },
         timeout=90,
     )
+    if response.status_code == 404:
+        raise NoInvoiceDataError(f"No invoice data for {site} {export_type} {start_date}~{end_date}")
     response.raise_for_status()
 
     filename = _filename_from_content_disposition(response.headers.get("content-disposition"))
@@ -52,6 +66,28 @@ def download_invoice_export(site: str, export_type: str, start_date: str, end_da
     if site == "special":
         resave_xls_with_excel(path)
     return path
+
+
+def mark_invoice_uploaded(
+    site: str,
+    export_type: str,
+    start_date: str,
+    end_date: str,
+    failed_order_numbers: list[str] | None = None,
+) -> dict:
+    response = requests.post(
+        config.INTRANET_INVOICE_UPLOAD_MARK_API_URL,
+        json={
+            "site": site,
+            "type": export_type,
+            "startDate": start_date,
+            "endDate": end_date,
+            "failedOrderNumbers": failed_order_numbers or [],
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def resave_xls_with_excel(path: Path) -> None:
