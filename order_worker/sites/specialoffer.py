@@ -42,33 +42,40 @@ async def run_one(page, context):
 
     # 1. 입금완료(배송요청) 클릭 및 발주확인
     print(f"PROGRESS: [{LABEL}] 입금완료 메뉴 이동 중...")
-    await page.click("#snb > dl > dd:nth-child(13) > a")
-    await page.wait_for_load_state("networkidle")
+    await page.goto(
+        "https://specialoffer.kr/mypage/page.php?code=seller_odr_2",
+        wait_until="networkidle",
+    )
 
     # 전체 체크박스 클릭 후 발주확인 (주문이 있을 때만)
-    try:
-        # 체크박스 존재 여부 확인 (예상 셀렉터: #check_all 또는 input[name='chk_all'])
-        checkboxes = page.locator("input[type='checkbox'][name^='chk[']")
-        if await checkboxes.count() > 0:
-            print(f"PROGRESS: [{LABEL}] 신규 주문 발견, 발주확인 진행 중...")
-            # 전체 선택 (보통 헤더의 체크박스 또는 루프)
-            await page.evaluate("document.querySelectorAll('input[type=\"checkbox\"]').forEach(c => c.checked = true)")
-            # 발주확인 버튼 클릭 (사용자 가이드에 따라 요소를 찾아야 함, 여기서는 일반적인 버튼 텍스트 시도)
-            confirm_btn = page.locator("button:has-text('발주확인'), a:has-text('발주확인'), button:has-text('주문확인')")
-            if await confirm_btn.count() > 0:
-                await confirm_btn.first.click()
-                await page.wait_for_load_state("networkidle")
-    except Exception as e:
-        print(f"  [{LABEL}] 발주확인 단계 스킵 혹은 오류: {str(e)}")
+    order_checkboxes = page.locator('input[name="chk[]"]')
+    order_count = await order_checkboxes.count()
+    if order_count > 0:
+        print(f"PROGRESS: [{LABEL}] 신규 주문 {order_count}건, 배송준비 처리 중...")
+        for checkbox in await page.locator('input[name="it_sel[]"]').all():
+            await checkbox.check()
+        for checkbox in await order_checkboxes.all():
+            await checkbox.check()
+        await page.locator('input[type="submit"][value="배송준비"]').click()
+        await page.wait_for_load_state("networkidle")
+        remaining_count = await page.locator('input[name="chk[]"]').count()
+        if remaining_count >= order_count:
+            raise RuntimeError(
+                f"배송준비 상태 변경을 확인하지 못했습니다. "
+                f"처리 전 {order_count}건, 처리 후 {remaining_count}건"
+            )
+        print(f"PROGRESS: [{LABEL}] 배송준비 처리 완료: {order_count - remaining_count}건")
 
     # 2. 배송준비 클릭
     print(f"PROGRESS: [{LABEL}] 배송준비 메뉴 이동 중...")
-    await page.click("#snb > dl > dd:nth-child(14) > a")
-    await page.wait_for_load_state("networkidle")
+    await page.goto(
+        "https://specialoffer.kr/mypage/page.php?code=seller_odr_3",
+        wait_until="networkidle",
+    )
 
     # 3. 검색결과 엑셀저장
     print(f"PROGRESS: [{LABEL}] 엑셀 다운로드 시도 중...")
-    excel_btn = "#forderlist > div.local_frm01 > a:nth-child(3)"
+    excel_btn = 'a[href*="seller_odr_excel.php?code=seller_odr_3"]'
     
     try:
         # 엑셀 버튼 클릭 전 alert 발생 여부 감지 로직 (주문 없을 시)

@@ -46,18 +46,26 @@ async def stage_invoice_file(page: Page, file_path: Path) -> None:
 
 
 def parse_result(text: str) -> dict:
-    success_match = re.search(r"(?:완료|성공)\s*[:：]?\s*([0-9,]+)\s*건", text)
-    failed_match = re.search(r"실패\s*[:：]?\s*([0-9,]+)\s*건", text)
+    total_match = re.search(r"총\s*배송\s*건수\s*[:：]?\s*([0-9,]+)\s*건", text)
+    success_match = re.search(r"(?:완료\s*건수|완료|성공)\s*[:：]?\s*([0-9,]+)\s*건", text)
+    failed_match = re.search(r"(?:실패\s*건수|실패)\s*[:：]?\s*([0-9,]+)\s*건", text)
+    total = int(total_match.group(1).replace(",", "")) if total_match else None
     uploaded = int(success_match.group(1).replace(",", "")) if success_match else 0
     failed = int(failed_match.group(1).replace(",", "")) if failed_match else 0
 
     failed_serials = re.findall(r"일련번호\s*[:：]?\s*([0-9A-Za-z_-]+)", text)
+    success = success_match is not None and failed == 0 and (total is None or total == uploaded)
     return {
-        "success": failed == 0,
+        "success": success,
+        "totalCount": total,
         "uploadedCount": uploaded,
         "failedCount": failed,
         "failedSerials": failed_serials,
-        "message": "배송정보 등록 결과를 확인했습니다.",
+        "message": (
+            "배송정보 등록 결과를 확인했습니다."
+            if success
+            else f"배송정보 처리 건수가 일치하지 않습니다. 총 {total}, 완료 {uploaded}, 실패 {failed}"
+        ),
         "resultText": text[:1000],
     }
 
