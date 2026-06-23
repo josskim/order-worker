@@ -42,7 +42,7 @@ INTRANET_INVOICE_UPLOAD_MARK_API_URL = os.getenv(
 )
 SISTER_INVOICE_UPLOAD_API_URL = os.getenv(
     "SISTER_INVOICE_UPLOAD_API_URL",
-    "http://localhost:3000/api/seller/invoice-upload",
+    "https://prahashop.co.kr/api/seller/invoice-upload",
 )
 SISTER_INVOICE_UPLOAD_TOKEN = os.getenv("SISTER_INVOICE_UPLOAD_TOKEN", "")
 SISTER_ORDER_EXPORT_API_URL = os.getenv(

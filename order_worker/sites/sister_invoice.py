@@ -11,14 +11,17 @@ LABEL = "시스터"
 
 
 def upload_invoice_file(file_path) -> dict:
-    if not config.SISTER_INVOICE_UPLOAD_TOKEN:
-        raise RuntimeError("SISTER_INVOICE_UPLOAD_TOKEN is required for Sister invoice upload")
+    if not config.SISTER_INVOICE_UPLOAD_TOKEN and not config.SISTER_ORDER_EXPORT_TOKEN:
+        raise RuntimeError("Sister API token is required for invoice upload")
 
     print(f"PROGRESS: [{LABEL}] 송장 엑셀 API 업로드: {file_path.name}")
     with file_path.open("rb") as file_obj:
         response = requests.post(
             config.SISTER_INVOICE_UPLOAD_API_URL,
-            headers={"x-sister-upload-token": config.SISTER_INVOICE_UPLOAD_TOKEN},
+            headers={
+                "x-sister-upload-token": config.SISTER_INVOICE_UPLOAD_TOKEN,
+                "x-sister-order-export-token": config.SISTER_ORDER_EXPORT_TOKEN,
+            },
             files={
                 "file": (
                     file_path.name,
@@ -29,8 +32,13 @@ def upload_invoice_file(file_path) -> dict:
             timeout=120,
         )
 
-    response.raise_for_status()
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not response.ok:
+        message = payload.get("error") or response.text[:500] or f"HTTP {response.status_code}"
+        raise RuntimeError(f"시스터 송장 업로드 실패 ({response.status_code}): {message}")
     return {
         "success": bool(payload.get("success")),
         "uploadedCount": int(payload.get("successCount") or 0),
