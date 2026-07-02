@@ -47,7 +47,7 @@ SISTER_INVOICE_UPLOAD_API_URL = os.getenv(
 SISTER_INVOICE_UPLOAD_TOKEN = os.getenv("SISTER_INVOICE_UPLOAD_TOKEN", "")
 SISTER_ORDER_EXPORT_API_URL = os.getenv(
     "SISTER_ORDER_EXPORT_API_URL",
-    "http://localhost:3000/api/seller/orders/export",
+    "https://prahashop.co.kr/api/seller/orders/export",
 )
 SISTER_ORDER_EXPORT_TOKEN = os.getenv("SISTER_ORDER_EXPORT_TOKEN", "")
 
