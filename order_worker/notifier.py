@@ -12,6 +12,13 @@ def shorten(value: object, limit: int = 220) -> str:
     return text[: limit - 1] + "..."
 
 
+def first_error(item: dict) -> str:
+    errors = item.get("errors")
+    if isinstance(errors, list) and errors:
+        return str(errors[0])
+    return ""
+
+
 def send_telegram_message(message: str) -> None:
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         print("PROGRESS: [telegram] settings missing. notification skipped.")
@@ -27,22 +34,22 @@ def send_telegram_message(message: str) -> None:
 
 def build_summary_message(results: list[dict], run_id: str) -> str:
     failed = [item for item in results if not item.get("success")]
-    title = "부분 실패" if failed else "성공"
+    title = "일부 실패" if failed else "성공"
     lines = [f"[자동 주문서 수집] {title}", f"ID: {run_id}", ""]
 
     for item in results:
         site = item.get("site", "?")
         if not item.get("success"):
-            error = shorten(item.get("error") or item.get("message") or "알 수 없는 오류")
+            error = shorten(item.get("error") or item.get("message") or first_error(item) or "알 수 없는 오류")
             prefix = "중단" if item.get("cancelRequest") else "실패"
             lines.append(f"{prefix} - {site}: {error}")
             continue
 
-        total = item.get("totalRows", 0)
-        inserted = item.get("insertedCount", 0)
-        duplicate = item.get("duplicateCount", 0)
-        if total == 0:
-            lines.append(f"성공 - {site}: 주문 없음")
+        total = int(item.get("totalRows") or 0)
+        inserted = int(item.get("insertedCount") or 0)
+        duplicate = int(item.get("duplicateCount") or 0)
+        if item.get("noData") or total == 0:
+            lines.append(f"주문 없음 - {site}")
         else:
             lines.append(f"성공 - {site}: 등록 {inserted}건 / 중복 {duplicate}건")
 
@@ -64,14 +71,16 @@ def build_invoice_upload_summary_message(results: list[dict], run_id: str) -> st
     for item in results:
         site = item.get("site", "?")
         if not item.get("success"):
-            error = shorten(item.get("error") or item.get("message") or "알 수 없는 오류")
+            error = shorten(item.get("error") or item.get("message") or first_error(item) or "알 수 없는 오류")
             prefix = "중단" if item.get("cancelRequest") else "실패"
             lines.append(f"{prefix} - {site}: {error}")
             continue
 
         uploaded = int(item.get("uploadedCount") or 0)
         failed_count = int(item.get("failedCount") or 0)
-        if item.get("preview"):
+        if item.get("noData"):
+            lines.append(f"업로드 없음 - {site}")
+        elif item.get("preview"):
             lines.append(f"확인 - {site}: preview")
         else:
             lines.append(f"완료 - {site}: 업로드 {uploaded}건 / 실패 {failed_count}건")

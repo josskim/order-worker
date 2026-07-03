@@ -40,6 +40,10 @@ def upload_to_intranet(file_path: str, site: str) -> dict:
             )
         response.raise_for_status()
         result = response.json()
+        if not result.get("success") and not result.get("error"):
+            errors = result.get("errors")
+            if isinstance(errors, list) and errors:
+                result["error"] = "; ".join(str(item) for item in errors if item)
 
         if os.path.exists(file_path):
             try:

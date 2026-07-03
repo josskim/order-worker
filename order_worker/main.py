@@ -61,10 +61,55 @@ SISTER_INVOICE_SITES = {"sister"}
 def format_result(result: dict) -> str:
     site = result.get("site", "?")
     if not result.get("success"):
-        return f"[FAIL] {site}: {result.get('error', 'unknown error')}"
-    if result.get("totalRows", 0) == 0:
+        return f"[FAIL] {site}: {result.get('error') or result.get('message') or first_error(result) or 'unknown error'}"
+    if result.get("noData") or result.get("totalRows", 0) == 0:
         return f"[EMPTY] {site}: no orders"
     return f"[OK] {site}: inserted {result.get('insertedCount', 0)}, duplicate {result.get('duplicateCount', 0)}"
+
+
+def first_error(result: dict) -> str:
+    errors = result.get("errors")
+    if isinstance(errors, list) and errors:
+        return str(errors[0])
+    return ""
+
+
+def is_order_no_data_result(result: dict) -> bool:
+    if result.get("success") and int(result.get("totalRows") or 0) == 0:
+        return True
+    error_text = " ".join(
+        str(value)
+        for value in [
+            result.get("error"),
+            result.get("message"),
+            first_error(result),
+        ]
+        if value
+    )
+    no_data_markers = [
+        "데이터 행이 없습니다",
+        "데이터가 없는 빈 파일",
+        "데이터가 없습니다",
+        "no orders",
+        "empty",
+    ]
+    return int(result.get("totalRows") or 0) == 0 and any(marker.lower() in error_text.lower() for marker in no_data_markers)
+
+
+def normalize_order_no_data_results(results: list[dict]) -> None:
+    for result in results:
+        if not is_order_no_data_result(result):
+            continue
+        result["success"] = True
+        result["totalRows"] = 0
+        result["insertedCount"] = 0
+        result["duplicateCount"] = 0
+        result["skippedCount"] = result.get("skippedCount", 0)
+        result["newOptionCount"] = result.get("newOptionCount", 0)
+        result["noData"] = True
+        result["message"] = "주문서 없음"
+        result.pop("error", None)
+        result["errors"] = []
 
 
 def format_invoice_upload_result(result: dict) -> str:
@@ -158,6 +203,8 @@ async def run_command(args: argparse.Namespace) -> int:
     with WorkerLock(config.LOCK_FILE):
         print(f"PROGRESS: [worker] run_id={run_id}")
         results = await run_sites(site_names)
+
+    normalize_order_no_data_results(results)
 
     for result in results:
         print(format_result(result))
