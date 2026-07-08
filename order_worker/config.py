@@ -25,10 +25,19 @@ def _load_env_file() -> None:
 _load_env_file()
 
 
-DOWNLOAD_DIR = Path(os.getenv("ORDER_WORKER_DOWNLOAD_DIR", PROJECT_ROOT / "downloads"))
-ARCHIVE_DIR = Path(os.getenv("ORDER_WORKER_ARCHIVE_DIR", PROJECT_ROOT / "archive"))
-LOG_DIR = Path(os.getenv("ORDER_WORKER_LOG_DIR", PROJECT_ROOT / "logs"))
-LOCK_FILE = Path(os.getenv("ORDER_WORKER_LOCK_FILE", PROJECT_ROOT / "order-worker.lock"))
+def _default_runtime_dir() -> Path:
+    if os.getenv("ORDER_WORKER_RUNTIME_DIR"):
+        return Path(os.environ["ORDER_WORKER_RUNTIME_DIR"])
+    if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"):
+        return Path("/tmp/order-worker")
+    return PROJECT_ROOT
+
+
+RUNTIME_DIR = _default_runtime_dir()
+DOWNLOAD_DIR = Path(os.getenv("ORDER_WORKER_DOWNLOAD_DIR", RUNTIME_DIR / "downloads"))
+ARCHIVE_DIR = Path(os.getenv("ORDER_WORKER_ARCHIVE_DIR", RUNTIME_DIR / "archive"))
+LOG_DIR = Path(os.getenv("ORDER_WORKER_LOG_DIR", RUNTIME_DIR / "logs"))
+LOCK_FILE = Path(os.getenv("ORDER_WORKER_LOCK_FILE", RUNTIME_DIR / "order-worker.lock"))
 
 INTRANET_API_URL = os.getenv("INTRANET_API_URL", "http://localhost:3001/api/order-import")
 INTRANET_LOG_API_URL = os.getenv("INTRANET_LOG_API_URL", "http://localhost:3001/api/order-import/log")
