@@ -32,10 +32,10 @@ Railway evaluates cron schedules in UTC. Korea Standard Time is UTC+9, so subtra
 Register production API URLs and tokens in Railway Variables. Do not commit real secrets.
 
 ```env
-INTRANET_API_URL=https://YOUR_INTRAnet_DOMAIN/api/order-import
-INTRANET_LOG_API_URL=https://YOUR_INTRAnet_DOMAIN/api/order-import/log
-INTRANET_INVOICE_EXPORT_API_URL=https://YOUR_INTRAnet_DOMAIN/api/invoice-export/file
-INTRANET_INVOICE_UPLOAD_MARK_API_URL=https://YOUR_INTRAnet_DOMAIN/api/invoice-export/mark-uploaded
+INTRANET_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import
+INTRANET_LOG_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import/log
+INTRANET_INVOICE_EXPORT_API_URL=https://YOUR_INTRANET_DOMAIN/api/invoice-export/file
+INTRANET_INVOICE_UPLOAD_MARK_API_URL=https://YOUR_INTRANET_DOMAIN/api/invoice-export/mark-uploaded
 SISTER_ORDER_EXPORT_API_URL=https://prahashop.co.kr/api/seller/orders/export
 SISTER_INVOICE_UPLOAD_API_URL=https://www.prahashop.co.kr/api/seller/invoice-upload
 SISTER_ORDER_EXPORT_TOKEN=...
