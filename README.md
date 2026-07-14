@@ -71,6 +71,16 @@ TELEGRAM_CHAT_ID=
 
 평일 월요일부터 금요일까지 `08:30`부터 `15:00`까지 30분 간격으로 전체 사이트를 실행합니다.
 
+송장 업로드 자동 작업은 아래 명령으로 등록합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-invoice-task.ps1
+```
+
+`Order Worker Weekday Invoice Upload` 작업이 월~금 오후 4시에 한 번 실행되며,
+`real` 업로드 후 `fake` 업로드를 순차 실행합니다. 같은 날짜에 예약 스크립트가
+다시 호출되더라도 일일 실행 표식으로 중복 업로드를 시작하지 않습니다.
+
 등록:
 
 ```powershell

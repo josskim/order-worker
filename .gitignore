@@ -5,6 +5,7 @@ __pycache__/
 downloads/
 archive/
 logs/
+runtime/
 *.egg-info/
 *.lock
 dist/
