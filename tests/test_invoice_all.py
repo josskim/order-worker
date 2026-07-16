@@ -30,7 +30,7 @@ class UploadAllInvoiceTypesTests(unittest.IsolatedAsyncioTestCase):
     @patch("order_worker.main.complete_run")
     @patch("order_worker.main.upload_invoices_command", new_callable=AsyncMock)
     @patch("order_worker.main.claim_run")
-    async def test_duplicate_claim_does_not_upload(
+    async def test_reused_run_id_does_not_upload(
         self,
         claim: Mock,
         upload: AsyncMock,
@@ -43,6 +43,30 @@ class UploadAllInvoiceTypesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exit_code, 0)
         upload.assert_not_awaited()
         complete.assert_not_called()
+
+    @patch("order_worker.main.complete_run")
+    @patch("order_worker.main.upload_invoices_command", new_callable=AsyncMock)
+    @patch("order_worker.main.claim_run")
+    async def test_completed_job_can_run_again_on_same_day(
+        self,
+        claim: Mock,
+        upload: AsyncMock,
+        complete: Mock,
+    ) -> None:
+        claim.side_effect = [
+            ClaimResult(acquired=True),
+            ClaimResult(acquired=True),
+        ]
+        upload.return_value = 0
+
+        first_exit_code = await main.upload_all_invoice_types_command()
+        second_exit_code = await main.upload_all_invoice_types_command()
+
+        self.assertEqual(first_exit_code, 0)
+        self.assertEqual(second_exit_code, 0)
+        self.assertEqual(claim.call_count, 2)
+        self.assertEqual(upload.await_count, 4)
+        self.assertEqual(complete.call_count, 2)
 
 
 if __name__ == "__main__":

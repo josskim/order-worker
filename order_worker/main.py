@@ -369,14 +369,14 @@ async def upload_all_invoice_types_command(result_sink: dict | None = None) -> i
     if not claim.acquired:
         print(
             "PROGRESS: [invoice-upload-all] "
-            f"already claimed for {run_date}, status={claim.existing_status or 'unknown'}"
+            f"run request already claimed, status={claim.existing_status or 'unknown'}"
         )
         if result_sink is not None:
             result_sink.update(
                 {
                     "status": "succeeded",
                     "skipped": True,
-                    "message": f"{run_date} 송장 작업이 이미 실행되었습니다.",
+                    "message": "동일한 송장 실행 요청이 이미 처리되었습니다.",
                     "summary": [],
                     "failed_sites": [],
                 }
@@ -527,7 +527,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "upload-invoices-all",
-        help="Claim today's DB run and upload real invoices followed by fake invoices.",
+        help="Create a DB run history entry and upload real invoices followed by fake invoices.",
     )
     job_parser = subparsers.add_parser("run-job", help="Run a DB-claimed Railway manual job")
     job_parser.add_argument("--task", choices=["collect", "invoices"], required=True)

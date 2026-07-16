@@ -33,9 +33,10 @@ running the vendor automation again.
   - `ORDER_WORKER_RUNTIME_DIR=/tmp/order-worker`
   - `ORDER_WORKER_HEADLESS=1`
 
-The invoice service claims one KST calendar date in the intranet DB, then runs
-`real` followed by `fake`. A second invocation on the same date exits without
-uploading again.
+The invoice service creates a new run-history entry for every invocation, then
+runs `real` followed by `fake`. Completed jobs can run again on the same KST
+calendar date, while the intranet job queue blocks another invoice job only
+while one is actively queued or running.
 
 Railway evaluates cron schedules in UTC. Korea Standard Time is UTC+9, so subtract 9 hours from the local time.
 
@@ -71,6 +72,7 @@ TELEGRAM_CHAT_ID=...
 ## Notes
 
 - Download, archive, log, and lock files are written to `/tmp/order-worker` by default on Railway.
-- `/tmp` is ephemeral. Daily invoice idempotency is stored in the intranet DB,
-  so deployments and container restarts cannot start a second upload that day.
+- `/tmp` is ephemeral. Invoice execution history is stored in the intranet DB.
+- Each completed button request can upload again on the same day; vendor-side
+  upload handling remains responsible for ignoring invoices already accepted.
 - If you need long-term file retention, attach a Railway volume and set `ORDER_WORKER_RUNTIME_DIR=/data/order-worker`.
