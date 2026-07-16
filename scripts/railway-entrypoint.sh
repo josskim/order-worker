@@ -22,8 +22,7 @@ case "$task" in
     exec python -m order_worker.main run --all
     ;;
   invoices)
-    invoice_type="${ORDER_WORKER_INVOICE_TYPE:-real}"
-    exec python -m order_worker.main upload-invoices --all --type "$invoice_type"
+    exec python -m order_worker.main upload-invoices-all
     ;;
   custom)
     if [ -z "${ORDER_WORKER_COMMAND:-}" ]; then

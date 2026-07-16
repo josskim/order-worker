@@ -41,6 +41,11 @@ LOCK_FILE = Path(os.getenv("ORDER_WORKER_LOCK_FILE", RUNTIME_DIR / "order-worker
 
 INTRANET_API_URL = os.getenv("INTRANET_API_URL", "http://localhost:3001/api/order-import")
 INTRANET_LOG_API_URL = os.getenv("INTRANET_LOG_API_URL", "http://localhost:3001/api/order-import/log")
+INTRANET_RUN_HISTORY_API_URL = os.getenv(
+    "INTRANET_RUN_HISTORY_API_URL",
+    "http://localhost:3001/api/order-worker/run-history",
+)
+ORDER_WORKER_RUN_HISTORY_TOKEN = os.getenv("ORDER_WORKER_RUN_HISTORY_TOKEN", "")
 INTRANET_INVOICE_EXPORT_API_URL = os.getenv(
     "INTRANET_INVOICE_EXPORT_API_URL",
     "http://localhost:3001/api/invoice-export/file",

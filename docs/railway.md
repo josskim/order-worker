@@ -21,9 +21,12 @@ Create separate Railway services from the same GitHub repository when you want s
 - Cron schedule: set to the desired shipping-upload time
 - Variables:
   - `ORDER_WORKER_TASK=invoices`
-  - `ORDER_WORKER_INVOICE_TYPE=real`
   - `ORDER_WORKER_RUNTIME_DIR=/tmp/order-worker`
   - `ORDER_WORKER_HEADLESS=1`
+
+The invoice service claims one KST calendar date in the intranet DB, then runs
+`real` followed by `fake`. A second invocation on the same date exits without
+uploading again.
 
 Railway evaluates cron schedules in UTC. Korea Standard Time is UTC+9, so subtract 9 hours from the local time.
 
@@ -34,6 +37,8 @@ Register production API URLs and tokens in Railway Variables. Do not commit real
 ```env
 INTRANET_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import
 INTRANET_LOG_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import/log
+INTRANET_RUN_HISTORY_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-worker/run-history
+ORDER_WORKER_RUN_HISTORY_TOKEN=...
 INTRANET_INVOICE_EXPORT_API_URL=https://YOUR_INTRANET_DOMAIN/api/invoice-export/file
 INTRANET_INVOICE_UPLOAD_MARK_API_URL=https://YOUR_INTRANET_DOMAIN/api/invoice-export/mark-uploaded
 SISTER_ORDER_EXPORT_API_URL=https://prahashop.co.kr/api/seller/orders/export
@@ -50,11 +55,12 @@ TELEGRAM_CHAT_ID=...
 - `railway.json` forces Dockerfile builds and disables restarts after a cron task exits.
 - `scripts/railway-entrypoint.sh` maps `ORDER_WORKER_TASK` to the existing commands:
   - `collect` -> `python -m order_worker.main run --all`
-  - `invoices` -> `python -m order_worker.main upload-invoices --all --type real`
+  - `invoices` -> `python -m order_worker.main upload-invoices-all`
   - `sites` -> `python -m order_worker.main sites`
 
 ## Notes
 
 - Download, archive, log, and lock files are written to `/tmp/order-worker` by default on Railway.
-- `/tmp` is ephemeral, which is fine because imported files are uploaded to the intranet and logs are posted to the intranet/Telegram.
+- `/tmp` is ephemeral. Daily invoice idempotency is stored in the intranet DB,
+  so deployments and container restarts cannot start a second upload that day.
 - If you need long-term file retention, attach a Railway volume and set `ORDER_WORKER_RUNTIME_DIR=/data/order-worker`.

@@ -4,13 +4,14 @@ import argparse
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 from order_worker import config
 from order_worker.lock import WorkerLock
 from order_worker.notifier import build_invoice_upload_summary_message, build_summary_message, send_telegram_message
+from order_worker.run_history import claim_run, complete_run
 from order_worker.sites import (
     domeggook,
     domeggook_invoice,
@@ -56,6 +57,8 @@ DOMEGGOOK_INVOICE_SITES = {"domeggook", "Fdomeggook"}
 DOMESIN_INVOICE_SITES = {"domegod"}
 SPECIALOFFER_INVOICE_SITES = {"special"}
 SISTER_INVOICE_SITES = {"sister"}
+KST = timezone(timedelta(hours=9), name="KST")
+ALL_INVOICE_TASK_KEY = "invoice-upload-real-fake"
 
 
 def format_result(result: dict) -> str:
@@ -222,7 +225,10 @@ async def run_command(args: argparse.Namespace) -> int:
     return 1 if any(not item.get("success") for item in results) else 0
 
 
-async def upload_invoices_command(args: argparse.Namespace) -> int:
+async def upload_invoices_command(
+    args: argparse.Namespace,
+    result_sink: dict | None = None,
+) -> int:
     config.ensure_directories()
     site_names = list(INVOICE_UPLOAD_SITES.keys()) if args.all else args.site
     today = datetime.now().strftime("%Y-%m-%d")
@@ -282,7 +288,91 @@ async def upload_invoices_command(args: argparse.Namespace) -> int:
 
     print("__JSON__")
     print(json.dumps(results, ensure_ascii=False))
-    return 1 if any(not item.get("success") for item in results) else 0
+    exit_code = 1 if any(not item.get("success") for item in results) else 0
+    if result_sink is not None:
+        result_sink.update(
+            {
+                "run_id": run_id,
+                "exit_code": exit_code,
+                "results": results,
+            }
+        )
+    return exit_code
+
+
+async def upload_all_invoice_types_command() -> int:
+    config.ensure_directories()
+    run_date = datetime.now(KST).strftime("%Y-%m-%d")
+    run_id = f"invoice-all-{uuid.uuid4().hex[:8]}"
+    claim = claim_run(
+        run_id=run_id,
+        task_key=ALL_INVOICE_TASK_KEY,
+        run_date=run_date,
+        details={"types": ["real", "fake"], "source": "order-worker"},
+    )
+    if not claim.acquired:
+        print(
+            "PROGRESS: [invoice-upload-all] "
+            f"already claimed for {run_date}, status={claim.existing_status or 'unknown'}"
+        )
+        return 0
+
+    type_results: dict[str, dict] = {}
+    unexpected_errors: list[str] = []
+    try:
+        for invoice_type in ("real", "fake"):
+            invoice_details: dict = {}
+            args = argparse.Namespace(
+                all=True,
+                site=None,
+                type=invoice_type,
+                start_date=run_date,
+                end_date=run_date,
+                preview=False,
+            )
+            try:
+                exit_code = await upload_invoices_command(args, invoice_details)
+                type_results[invoice_type] = {
+                    **invoice_details,
+                    "exit_code": exit_code,
+                }
+            except Exception as exc:
+                message = f"{invoice_type}: {exc}"
+                unexpected_errors.append(message)
+                type_results[invoice_type] = {"exit_code": 1, "error": str(exc)}
+                print(f"PROGRESS: [invoice-upload-all] unexpected error: {message}")
+
+        failed_types = [
+            invoice_type
+            for invoice_type, result in type_results.items()
+            if int(result.get("exit_code") or 0) != 0
+        ]
+        status = "succeeded" if not failed_types else "partial"
+        complete_run(
+            run_id=run_id,
+            status=status,
+            details={
+                "run_date": run_date,
+                "types": type_results,
+                "failed_types": failed_types,
+                "unexpected_errors": unexpected_errors,
+            },
+        )
+        return 1 if failed_types else 0
+    except Exception as exc:
+        try:
+            complete_run(
+                run_id=run_id,
+                status="failed",
+                details={
+                    "run_date": run_date,
+                    "types": type_results,
+                    "unexpected_errors": [*unexpected_errors, str(exc)],
+                },
+            )
+        except Exception as history_exc:
+            print(f"PROGRESS: [invoice-upload-all] completion log failed: {history_exc}")
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -303,6 +393,10 @@ def build_parser() -> argparse.ArgumentParser:
     invoice_parser.add_argument("--end-date", help="End date in YYYY-MM-DD. Defaults to start date.")
     invoice_parser.add_argument("--preview", action="store_true", help="Upload Excel and stop before final shipping registration.")
 
+    subparsers.add_parser(
+        "upload-invoices-all",
+        help="Claim today's DB run and upload real invoices followed by fake invoices.",
+    )
     subparsers.add_parser("sites", help="List supported sites")
     subparsers.add_parser("invoice-sites", help="List supported invoice upload sites")
     return parser
@@ -327,6 +421,9 @@ def main() -> int:
 
     if args.command == "upload-invoices":
         return asyncio.run(upload_invoices_command(args))
+
+    if args.command == "upload-invoices-all":
+        return asyncio.run(upload_all_invoice_types_command())
 
     parser.print_help()
     return 2

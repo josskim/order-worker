@@ -34,6 +34,8 @@ python -m venv .venv
 ```env
 INTRANET_API_URL=http://localhost:3001/api/order-import
 INTRANET_LOG_API_URL=http://localhost:3001/api/order-import/log
+INTRANET_RUN_HISTORY_API_URL=http://localhost:3001/api/order-worker/run-history
+ORDER_WORKER_RUN_HISTORY_TOKEN=
 ORDER_WORKER_DOWNLOAD_DIR=E:\dev\order-worker\downloads
 ORDER_WORKER_ARCHIVE_DIR=E:\dev\order-worker\archive
 ORDER_WORKER_LOG_DIR=E:\dev\order-worker\logs
@@ -78,8 +80,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-invoice-task.ps1
 ```
 
 `Order Worker Weekday Invoice Upload` 작업이 월~금 오후 4시에 한 번 실행되며,
-`real` 업로드 후 `fake` 업로드를 순차 실행합니다. 같은 날짜에 예약 스크립트가
-다시 호출되더라도 일일 실행 표식으로 중복 업로드를 시작하지 않습니다.
+인트라넷 DB에 해당 날짜 실행을 먼저 등록한 후 `real` 업로드와 `fake` 업로드를
+순차 실행합니다. 같은 날짜에 작업이 다시 호출되더라도 두 번째 실행은 업로드를
+시작하지 않습니다.
 
 등록:
 
