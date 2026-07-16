@@ -22,7 +22,7 @@ class UploadAllInvoiceTypesTests(unittest.IsolatedAsyncioTestCase):
 
         exit_code = await main.upload_all_invoice_types_command()
 
-        self.assertEqual(exit_code, 1)
+        self.assertEqual(exit_code, 0)
         self.assertEqual([call.args[0].type for call in upload.call_args_list], ["real", "fake"])
         self.assertEqual(complete.call_args.kwargs["status"], "partial")
         self.assertEqual(complete.call_args.kwargs["details"]["failed_types"], ["fake"])

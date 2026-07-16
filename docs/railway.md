@@ -6,6 +6,15 @@
 
 Create separate Railway services from the same GitHub repository when you want separate schedules.
 
+For intranet button-triggered runs, use two fixed services:
+
+- `order-worker-collect`: `ORDER_WORKER_TASK=collect-job`
+- `order-worker-invoices`: `ORDER_WORKER_TASK=invoices-job`
+
+The intranet sets a unique `ORDER_WORKER_JOB_ID` and redeploys the matching
+service. Repeated deployments with an already completed job ID exit without
+running the vendor automation again.
+
 ### Order collection
 
 - Source: `josskim/order-worker`
@@ -38,6 +47,7 @@ Register production API URLs and tokens in Railway Variables. Do not commit real
 INTRANET_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import
 INTRANET_LOG_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import/log
 INTRANET_RUN_HISTORY_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-worker/run-history
+INTRANET_JOB_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-worker/jobs/worker
 ORDER_WORKER_RUN_HISTORY_TOKEN=...
 INTRANET_INVOICE_EXPORT_API_URL=https://YOUR_INTRANET_DOMAIN/api/invoice-export/file
 INTRANET_INVOICE_UPLOAD_MARK_API_URL=https://YOUR_INTRANET_DOMAIN/api/invoice-export/mark-uploaded

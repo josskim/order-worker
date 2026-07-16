@@ -45,7 +45,12 @@ INTRANET_RUN_HISTORY_API_URL = os.getenv(
     "INTRANET_RUN_HISTORY_API_URL",
     "http://localhost:3001/api/order-worker/run-history",
 )
+INTRANET_JOB_API_URL = os.getenv(
+    "INTRANET_JOB_API_URL",
+    "http://localhost:3001/api/order-worker/jobs/worker",
+)
 ORDER_WORKER_RUN_HISTORY_TOKEN = os.getenv("ORDER_WORKER_RUN_HISTORY_TOKEN", "")
+ORDER_WORKER_JOB_ID = os.getenv("ORDER_WORKER_JOB_ID", "")
 INTRANET_INVOICE_EXPORT_API_URL = os.getenv(
     "INTRANET_INVOICE_EXPORT_API_URL",
     "http://localhost:3001/api/invoice-export/file",

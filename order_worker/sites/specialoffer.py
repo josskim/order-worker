@@ -78,9 +78,13 @@ async def run_one(page, context):
     excel_btn = 'a[href*="seller_odr_excel.php?code=seller_odr_3"]'
     
     try:
-        # 엑셀 버튼 클릭 전 alert 발생 여부 감지 로직 (주문 없을 시)
-        async with page.expect_download(timeout=10000) as dl:
-            await page.click(excel_btn)
+        button = page.locator(excel_btn)
+        if await button.count() == 0:
+            print(f"  [{LABEL}] 엑셀 버튼 없음 (주문 없음)")
+            return {"site": LABEL, "success": True, "totalRows": 0, "insertedCount": 0}
+
+        async with page.expect_download(timeout=30000) as dl:
+            await button.click(no_wait_after=True, timeout=15000)
             
         download = await dl.value
         save_path = os.path.join(DOWNLOAD_DIR, download.suggested_filename or "specialoffer_orders.xls")

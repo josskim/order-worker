@@ -21,8 +21,14 @@ case "$task" in
   collect)
     exec python -m order_worker.main run --all
     ;;
+  collect-job)
+    exec python -m order_worker.main run-job --task collect
+    ;;
   invoices)
     exec python -m order_worker.main upload-invoices-all
+    ;;
+  invoices-job)
+    exec python -m order_worker.main run-job --task invoices
     ;;
   custom)
     if [ -z "${ORDER_WORKER_COMMAND:-}" ]; then

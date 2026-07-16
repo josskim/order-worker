@@ -71,3 +71,52 @@ def complete_run(
     payload = response.json()
     if not payload.get("success"):
         raise RuntimeError(payload.get("error") or "Run history completion failed")
+
+
+def claim_job(*, job_id: str, task: str) -> ClaimResult:
+    response = requests.post(
+        config.INTRANET_JOB_API_URL,
+        headers=_headers(),
+        json={
+            "action": "claim",
+            "job_id": job_id,
+            "task": task,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("success"):
+        raise RuntimeError(payload.get("error") or "Job claim failed")
+    job = payload.get("job") or {}
+    return ClaimResult(
+        acquired=bool(payload.get("acquired")),
+        existing_status=job.get("status"),
+    )
+
+
+def complete_job(
+    *,
+    job_id: str,
+    task: str,
+    status: str,
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    response = requests.post(
+        config.INTRANET_JOB_API_URL,
+        headers=_headers(),
+        json={
+            "action": "complete",
+            "job_id": job_id,
+            "task": task,
+            "status": status,
+            "result": result or {},
+            "error": error,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("success"):
+        raise RuntimeError(payload.get("error") or "Job completion failed")

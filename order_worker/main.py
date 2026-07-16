@@ -11,7 +11,7 @@ import requests
 from order_worker import config
 from order_worker.lock import WorkerLock
 from order_worker.notifier import build_invoice_upload_summary_message, build_summary_message, send_telegram_message
-from order_worker.run_history import claim_run, complete_run
+from order_worker.run_history import claim_job, claim_run, complete_job, complete_run
 from order_worker.sites import (
     domeggook,
     domeggook_invoice,
@@ -75,6 +75,46 @@ def first_error(result: dict) -> str:
     if isinstance(errors, list) and errors:
         return str(errors[0])
     return ""
+
+
+def summarize_result(result: dict) -> dict:
+    summary = {
+        "site": result.get("site", "?"),
+        "success": bool(result.get("success")),
+    }
+    for key in (
+        "siteCode",
+        "noData",
+        "preview",
+        "totalRows",
+        "insertedCount",
+        "duplicateCount",
+        "skippedCount",
+        "newOptionCount",
+        "uploadedCount",
+        "failedCount",
+        "markedUploadedCount",
+        "message",
+        "markUploadedError",
+    ):
+        if key in result:
+            summary[key] = result[key]
+    if not result.get("success"):
+        summary["error"] = str(result.get("error") or result.get("message") or first_error(result) or "unknown error")[:500]
+    return summary
+
+
+def summarize_results(results: list[dict]) -> list[dict]:
+    return [summarize_result(result) for result in results]
+
+
+def result_status(results: list[dict]) -> str:
+    failed_count = sum(1 for item in results if not item.get("success"))
+    if failed_count == 0:
+        return "succeeded"
+    if failed_count < len(results):
+        return "partial"
+    return "failed"
 
 
 def is_order_no_data_result(result: dict) -> bool:
@@ -198,7 +238,10 @@ def post_intranet_log(run_id: str, results: list[dict]) -> None:
         print(f"PROGRESS: [log] intranet log failed: {exc}")
 
 
-async def run_command(args: argparse.Namespace) -> int:
+async def run_command(
+    args: argparse.Namespace,
+    result_sink: dict | None = None,
+) -> int:
     config.ensure_directories()
     site_names = list(SITE_RUNNERS.keys()) if args.all else args.site
     run_id = str(uuid.uuid4())[:8]
@@ -212,8 +255,10 @@ async def run_command(args: argparse.Namespace) -> int:
     for result in results:
         print(format_result(result))
 
-    write_log(run_id, results)
-    post_intranet_log(run_id, results)
+    public_results = summarize_results(results)
+    status = result_status(results)
+    write_log(run_id, public_results)
+    post_intranet_log(run_id, public_results)
 
     try:
         send_telegram_message(build_summary_message(results, run_id))
@@ -221,8 +266,17 @@ async def run_command(args: argparse.Namespace) -> int:
         print(f"PROGRESS: [telegram] send failed: {exc}")
 
     print("__JSON__")
-    print(json.dumps(results, ensure_ascii=False))
-    return 1 if any(not item.get("success") for item in results) else 0
+    print(json.dumps(public_results, ensure_ascii=False))
+    if result_sink is not None:
+        result_sink.update(
+            {
+                "run_id": run_id,
+                "status": status,
+                "summary": public_results,
+                "failed_sites": [str(item.get("site") or "?") for item in public_results if not item.get("success")],
+            }
+        )
+    return 1 if status == "failed" else 0
 
 
 async def upload_invoices_command(
@@ -280,27 +334,29 @@ async def upload_invoices_command(
     for result in results:
         print(format_invoice_upload_result(result))
 
-    write_log(f"invoice-upload-{run_id}", results)
+    public_results = summarize_results(results)
+    write_log(f"invoice-upload-{run_id}", public_results)
     try:
         send_telegram_message(build_invoice_upload_summary_message(results, run_id))
     except Exception as exc:
         print(f"PROGRESS: [telegram] send failed: {exc}")
 
     print("__JSON__")
-    print(json.dumps(results, ensure_ascii=False))
+    print(json.dumps(public_results, ensure_ascii=False))
     exit_code = 1 if any(not item.get("success") for item in results) else 0
     if result_sink is not None:
         result_sink.update(
             {
                 "run_id": run_id,
                 "exit_code": exit_code,
-                "results": results,
+                "summary": public_results,
+                "failed_sites": [str(item.get("site") or "?") for item in public_results if not item.get("success")],
             }
         )
     return exit_code
 
 
-async def upload_all_invoice_types_command() -> int:
+async def upload_all_invoice_types_command(result_sink: dict | None = None) -> int:
     config.ensure_directories()
     run_date = datetime.now(KST).strftime("%Y-%m-%d")
     run_id = f"invoice-all-{uuid.uuid4().hex[:8]}"
@@ -315,6 +371,16 @@ async def upload_all_invoice_types_command() -> int:
             "PROGRESS: [invoice-upload-all] "
             f"already claimed for {run_date}, status={claim.existing_status or 'unknown'}"
         )
+        if result_sink is not None:
+            result_sink.update(
+                {
+                    "status": "succeeded",
+                    "skipped": True,
+                    "message": f"{run_date} 송장 작업이 이미 실행되었습니다.",
+                    "summary": [],
+                    "failed_sites": [],
+                }
+            )
         return 0
 
     type_results: dict[str, dict] = {}
@@ -358,7 +424,28 @@ async def upload_all_invoice_types_command() -> int:
                 "unexpected_errors": unexpected_errors,
             },
         )
-        return 1 if failed_types else 0
+        combined_summary = [
+            item
+            for invoice_type in ("real", "fake")
+            for item in type_results.get(invoice_type, {}).get("summary", [])
+        ]
+        if result_sink is not None:
+            result_sink.update(
+                {
+                    "run_id": run_id,
+                    "status": status,
+                    "types": type_results,
+                    "summary": combined_summary,
+                    "failed_sites": sorted(
+                        {
+                            str(site)
+                            for invoice_type in ("real", "fake")
+                            for site in type_results.get(invoice_type, {}).get("failed_sites", [])
+                        }
+                    ),
+                }
+            )
+        return 0
     except Exception as exc:
         try:
             complete_run(
@@ -372,6 +459,51 @@ async def upload_all_invoice_types_command() -> int:
             )
         except Exception as history_exc:
             print(f"PROGRESS: [invoice-upload-all] completion log failed: {history_exc}")
+        raise
+
+
+async def run_job_command(task: str) -> int:
+    job_id = config.ORDER_WORKER_JOB_ID.strip()
+    if not job_id:
+        print(f"PROGRESS: [job] ORDER_WORKER_JOB_ID missing. {task} job skipped.")
+        return 0
+
+    claim = claim_job(job_id=job_id, task=task)
+    if not claim.acquired:
+        print(f"PROGRESS: [job] {job_id} already claimed, status={claim.existing_status or 'unknown'}")
+        return 0
+
+    details: dict = {}
+    try:
+        if task == "collect":
+            exit_code = await run_command(
+                argparse.Namespace(all=True, site=None),
+                details,
+            )
+        elif task == "invoices":
+            exit_code = await upload_all_invoice_types_command(details)
+        else:
+            raise ValueError(f"Unsupported job task: {task}")
+
+        status = str(details.get("status") or ("failed" if exit_code else "succeeded"))
+        complete_job(
+            job_id=job_id,
+            task=task,
+            status=status,
+            result=details,
+        )
+        return 1 if status == "failed" else 0
+    except Exception as exc:
+        try:
+            complete_job(
+                job_id=job_id,
+                task=task,
+                status="failed",
+                result=details,
+                error=str(exc)[:1000],
+            )
+        except Exception as completion_error:
+            print(f"PROGRESS: [job] completion log failed: {completion_error}")
         raise
 
 
@@ -397,6 +529,8 @@ def build_parser() -> argparse.ArgumentParser:
         "upload-invoices-all",
         help="Claim today's DB run and upload real invoices followed by fake invoices.",
     )
+    job_parser = subparsers.add_parser("run-job", help="Run a DB-claimed Railway manual job")
+    job_parser.add_argument("--task", choices=["collect", "invoices"], required=True)
     subparsers.add_parser("sites", help="List supported sites")
     subparsers.add_parser("invoice-sites", help="List supported invoice upload sites")
     return parser
@@ -424,6 +558,9 @@ def main() -> int:
 
     if args.command == "upload-invoices-all":
         return asyncio.run(upload_all_invoice_types_command())
+
+    if args.command == "run-job":
+        return asyncio.run(run_job_command(args.task))
 
     parser.print_help()
     return 2
