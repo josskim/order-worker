@@ -3,7 +3,7 @@
 """
 import asyncio
 import os
-from playwright.async_api import async_playwright
+from playwright.async_api import Error as PlaywrightError, Page, async_playwright
 from order_worker import config
 from order_worker.sites.utils import DOWNLOAD_DIR, upload_to_intranet
 
@@ -11,22 +11,53 @@ SITE_CODE = "special"
 LABEL = "스페셜오퍼"
 USER_ID = "jupraha"
 PASSWORD = "hare2580@@"
+NAVIGATION_TIMEOUT_MS = 60000
+NAVIGATION_ATTEMPTS = 2
+
+
+async def goto_with_retry(
+    page: Page,
+    url: str,
+    attempts: int = NAVIGATION_ATTEMPTS,
+) -> None:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=NAVIGATION_TIMEOUT_MS,
+            )
+            return
+        except PlaywrightError as exc:
+            last_error = exc
+            if attempt >= attempts:
+                raise
+            print(f"  [{LABEL}] 페이지 이동 재시도 {attempt}/{attempts}: {url}")
+            await page.wait_for_timeout(1000 * attempt)
+    raise RuntimeError(f"페이지 이동 실패: {url} / {last_error}")
 
 async def run_one(page, context):
     print(f"PROGRESS: [{LABEL}] 로그인 중...")
-    await page.goto("https://specialoffer.kr/bbs/login.php")
-    await page.wait_for_load_state("domcontentloaded")
+    await goto_with_retry(page, "https://specialoffer.kr/bbs/login.php")
     
     # 로그인 정보 입력
     await page.fill("#login_id", USER_ID)
     await page.fill("#login_pw", PASSWORD)
-    await page.click("#login_fld > dl > dd:nth-child(5) > button")
-    await page.wait_for_load_state("networkidle")
+    await page.click("#login_fld > dl > dd:nth-child(5) > button", no_wait_after=True)
+    try:
+        await page.wait_for_url(
+            lambda url: "/bbs/login.php" not in url,
+            wait_until="domcontentloaded",
+            timeout=NAVIGATION_TIMEOUT_MS,
+        )
+    except PlaywrightError as exc:
+        if "/bbs/login.php" in page.url:
+            raise RuntimeError("로그인 후 페이지 이동을 확인하지 못했습니다.") from exc
     print(f"PROGRESS: [{LABEL}] 로그인 완료")
 
     # 관리자/마이페이지 이동
-    await page.goto("https://specialoffer.kr/mypage/page.php?code=seller_main")
-    await page.wait_for_load_state("networkidle")
+    await goto_with_retry(page, "https://specialoffer.kr/mypage/page.php?code=seller_main")
 
     # 팝업 닫기
     try:
@@ -42,9 +73,9 @@ async def run_one(page, context):
 
     # 1. 입금완료(배송요청) 클릭 및 발주확인
     print(f"PROGRESS: [{LABEL}] 입금완료 메뉴 이동 중...")
-    await page.goto(
+    await goto_with_retry(
+        page,
         "https://specialoffer.kr/mypage/page.php?code=seller_odr_2",
-        wait_until="networkidle",
     )
 
     # 전체 체크박스 클릭 후 발주확인 (주문이 있을 때만)
@@ -57,7 +88,7 @@ async def run_one(page, context):
         for checkbox in await order_checkboxes.all():
             await checkbox.check()
         await page.locator('input[type="submit"][value="배송준비"]').click()
-        await page.wait_for_load_state("networkidle")
+        await page.wait_for_load_state("domcontentloaded")
         remaining_count = await page.locator('input[name="chk[]"]').count()
         if remaining_count >= order_count:
             raise RuntimeError(
@@ -68,9 +99,9 @@ async def run_one(page, context):
 
     # 2. 배송준비 클릭
     print(f"PROGRESS: [{LABEL}] 배송준비 메뉴 이동 중...")
-    await page.goto(
+    await goto_with_retry(
+        page,
         "https://specialoffer.kr/mypage/page.php?code=seller_odr_3",
-        wait_until="networkidle",
     )
 
     # 3. 검색결과 엑셀저장
@@ -103,6 +134,7 @@ async def run():
         browser = await p.chromium.launch(headless=config.HEADLESS)
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
+        page.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
         try:
             r = await run_one(page, context)
         except Exception as e:
