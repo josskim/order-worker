@@ -92,8 +92,13 @@ def summarize_result(result: dict) -> dict:
         "skippedCount",
         "newOptionCount",
         "uploadedCount",
+        "confirmedCount",
+        "alreadyProcessedCount",
+        "expectedCount",
         "failedCount",
         "markedUploadedCount",
+        "retryStartDate",
+        "retryEndDate",
         "message",
         "markUploadedError",
     ):
@@ -179,7 +184,8 @@ def mark_successful_invoice_uploads(results: list[dict], export_type: str, start
     for result in results:
         if not result.get("success") or result.get("preview") or result.get("noData"):
             continue
-        if int(result.get("uploadedCount") or 0) <= 0:
+        confirmed_count = int(result.get("confirmedCount") or result.get("uploadedCount") or 0)
+        if confirmed_count <= 0:
             continue
         site_code = result.get("siteCode")
         if not site_code:
@@ -190,7 +196,13 @@ def mark_successful_invoice_uploads(results: list[dict], export_type: str, start
             if item.get("orderNumber")
         ]
         try:
-            mark_result = mark_invoice_uploaded(site_code, export_type, start_date, end_date, failed_order_numbers)
+            mark_result = mark_invoice_uploaded(
+                site_code,
+                export_type,
+                str(result.get("retryStartDate") or start_date),
+                str(result.get("retryEndDate") or end_date),
+                failed_order_numbers,
+            )
             result["markedUploadedCount"] = mark_result.get("markedCount", 0)
         except Exception as exc:
             result["markUploadedError"] = str(exc)

@@ -69,5 +69,27 @@ class UploadAllInvoiceTypesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(complete.call_count, 2)
 
 
+class MarkSuccessfulInvoiceUploadsTests(unittest.TestCase):
+    @patch("order_worker.main.mark_invoice_uploaded")
+    def test_uses_retry_range_and_confirmed_count(self, mark_uploaded: Mock) -> None:
+        mark_uploaded.return_value = {"markedCount": 1}
+        results = [
+            {
+                "site": "도매의신",
+                "siteCode": "domegod",
+                "success": True,
+                "uploadedCount": 0,
+                "confirmedCount": 1,
+                "retryStartDate": "2026-07-20",
+                "retryEndDate": "2026-07-22",
+            }
+        ]
+
+        main.mark_successful_invoice_uploads(results, "real", "2026-07-22", "2026-07-22")
+
+        mark_uploaded.assert_called_once_with("domegod", "real", "2026-07-20", "2026-07-22", [])
+        self.assertEqual(results[0]["markedUploadedCount"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

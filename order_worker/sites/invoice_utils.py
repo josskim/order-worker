@@ -40,6 +40,24 @@ def download_invoice_export(
     *,
     exclude_uploaded: bool = True,
 ) -> Path:
+    path, _row_count = download_invoice_export_with_count(
+        site,
+        export_type,
+        start_date,
+        end_date,
+        exclude_uploaded=exclude_uploaded,
+    )
+    return path
+
+
+def download_invoice_export_with_count(
+    site: str,
+    export_type: str,
+    start_date: str,
+    end_date: str,
+    *,
+    exclude_uploaded: bool = True,
+) -> tuple[Path, int | None]:
     config.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     response = requests.get(
         config.INTRANET_INVOICE_EXPORT_API_URL,
@@ -65,7 +83,12 @@ def download_invoice_export(
     path.write_bytes(response.content)
     if site == "special":
         resave_xls_with_excel(path)
-    return path
+
+    row_count = None
+    raw_row_count = response.headers.get("x-invoice-row-count")
+    if raw_row_count and raw_row_count.isdigit():
+        row_count = int(raw_row_count)
+    return path, row_count
 
 
 def mark_invoice_uploaded(
