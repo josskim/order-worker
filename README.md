@@ -40,8 +40,10 @@ ORDER_WORKER_DOWNLOAD_DIR=E:\dev\order-worker\downloads
 ORDER_WORKER_ARCHIVE_DIR=E:\dev\order-worker\archive
 ORDER_WORKER_LOG_DIR=E:\dev\order-worker\logs
 ORDER_WORKER_HEADLESS=1
-DOMEGGOOK_WAIT_SECONDS=120
-DOMEGGOOK_POLL_SECONDS=5
+DOMEGGOOK_ACTION_WAIT_SECONDS=90
+DOMEGGOOK_WAIT_SECONDS=600
+DOMEGGOOK_POLL_SECONDS=3
+DOMEGGOOK_DOWNLOAD_TIMEOUT_SECONDS=90
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 ```
@@ -106,4 +108,4 @@ Order Worker Weekday Import
 
 ## 참고
 
-도매꾹/F도매꾹은 엑셀 생성 후 다운로드 버튼이 늦게 생길 수 있습니다. 기본값은 최대 120초까지 5초 간격으로 확인하도록 설정되어 있습니다.
+도매꾹/F도매꾹은 엑셀 요청 화면과 iframe/팝업을 최대 90초까지 확인합니다. 파일 생성요청 후에는 `다운받기` 버튼이 실제로 보이고 활성화될 때까지 최대 600초 동안 3초 간격으로 새로고침하며 확인하고, 다운로드 이벤트도 최대 90초까지 기다립니다.

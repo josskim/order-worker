@@ -3,7 +3,13 @@
 """
 import asyncio
 import os
-from playwright.async_api import async_playwright
+import time
+
+from playwright.async_api import (
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeoutError,
+    async_playwright,
+)
 from order_worker import config
 from order_worker.sites.utils import DOWNLOAD_DIR, upload_to_intranet
 
@@ -11,6 +17,105 @@ ACCOUNTS = [
     ("domeggook",  "jupraha",     "hana2580@@", "도매꾹"),
     ("Fdomeggook", "trustprice",  "hana2580@@", "F도매꾹"),
 ]
+
+
+DOWNLOAD_BTN_SELECTOR = (
+    "a:has-text('다운받기'), "
+    "#lGrid > div > div.tui-grid-content-area.tui-grid-no-scroll-x"
+    " > div.tui-grid-rside-area > div.tui-grid-body-area > div"
+    " > div.tui-grid-table-container > table > tbody"
+    " > tr.tui-grid-row-odd.tui-grid-cell-current-row"
+    " > td:nth-child(3) > div > a"
+)
+
+
+async def first_visible_enabled(locator):
+    count = await locator.count()
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            if await candidate.is_visible() and await candidate.is_enabled():
+                return candidate
+        except PlaywrightError:
+            continue
+    return None
+
+
+async def wait_for_action_target(context, selector, timeout_seconds, label):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        for candidate_page in reversed(context.pages):
+            for frame in candidate_page.frames:
+                candidate = await first_visible_enabled(frame.locator(selector))
+                if candidate:
+                    return candidate_page, frame, candidate
+        await asyncio.sleep(1)
+    raise PlaywrightTimeoutError(
+        f"{selector} 버튼이 {timeout_seconds}초 안에 나타나지 않았습니다."
+    )
+
+
+async def wait_for_download_button(
+    page,
+    label,
+    context=None,
+    timeout_seconds=None,
+    poll_seconds=None,
+):
+    timeout_seconds = timeout_seconds or config.DOMEGGOOK_WAIT_SECONDS
+    poll_seconds = poll_seconds or config.DOMEGGOOK_POLL_SECONDS
+    deadline = time.monotonic() + timeout_seconds
+    attempt = 0
+    last_error = ""
+
+    while time.monotonic() < deadline:
+        attempt += 1
+        candidate_pages = reversed(context.pages) if context else [page]
+        for candidate_page in candidate_pages:
+            for frame in candidate_page.frames:
+                candidate = await first_visible_enabled(
+                    frame.locator(DOWNLOAD_BTN_SELECTOR)
+                )
+                if candidate:
+                    elapsed = min(
+                        timeout_seconds,
+                        max(
+                            0,
+                            round(timeout_seconds - (deadline - time.monotonic())),
+                        ),
+                    )
+                    print(
+                        f"PROGRESS: [{label}] 다운받기 버튼 활성화 확인 "
+                        f"({elapsed}초, {attempt}회 확인)"
+                    )
+                    return candidate_page, candidate
+
+        elapsed = min(
+            timeout_seconds,
+            max(0, round(timeout_seconds - (deadline - time.monotonic()))),
+        )
+        print(
+            f"PROGRESS: [{label}] 엑셀 생성 대기 중... "
+            f"({elapsed}/{timeout_seconds}초, {attempt}회 확인)"
+        )
+        await asyncio.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
+        if time.monotonic() >= deadline:
+            break
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(500)
+        except PlaywrightError as exc:
+            last_error = str(exc)
+            print(
+                f"  [{label}] 생성 상태 새로고침 일시 실패, 계속 대기합니다: "
+                f"{last_error}"
+            )
+
+    detail = f" / 마지막 새로고침 오류: {last_error}" if last_error else ""
+    raise PlaywrightTimeoutError(
+        f"다운받기 버튼이 {timeout_seconds}초 동안 활성화되지 않았습니다{detail}"
+    )
+
 
 async def run_one(site_code, user_id, password, label, page, context):
     print(f"PROGRESS: [{label}] 로그인 중...")
@@ -62,76 +167,76 @@ async def run_one(site_code, user_id, password, label, page, context):
     # 엑셀 다운로드 클릭 (모달/팝업 감지)
     print(f"PROGRESS: [{label}] 엑셀 다운로드 클릭 (모달 대기)...")
     try:
-        await page.click("#lList > div.pHeader > form > a")
-    except:
-        # 엑셀 다운로드 버튼 자체가 없는 경우 (주문 0건 등)
-        print(f"  [{label}] 엑셀 다운로드 버튼을 찾을 수 없습니다. (주문 없음 추정)")
-        return {"site": label, "success": True, "totalRows": 0, "insertedCount": 0}
+        _, _, excel_request_button = await wait_for_action_target(
+            context,
+            "#lList > div.pHeader > form > a",
+            config.DOMEGGOOK_ACTION_WAIT_SECONDS,
+            label,
+        )
+        await excel_request_button.click()
+    except PlaywrightTimeoutError as exc:
+        return {
+            "site": label,
+            "success": False,
+            "error": f"주문 화면 진입 후 엑셀 다운로드 버튼 대기 실패: {exc}",
+        }
     
     # 모달이 나타날 때까지 대기
     submit_btn_selector = "#lXlsReqNoticeBtnSubmit"
     try:
-        # 1. 현재 페이지 내 모달 확인
-        await page.wait_for_selector(submit_btn_selector, state="visible", timeout=7000)
-        target = page
-        print(f"  [{label}] 페이지 내 모달 확인")
-    except:
-        # 2. iframe 내에 있는지 확인
-        print(f"  [{label}] 페이지 내 모달 없음, iframe/팝업 확인 중...")
-        target = None
-        for frame in page.frames:
-            try:
-                if await frame.locator(submit_btn_selector).count() > 0:
-                    target = frame
-                    print(f"  [{label}] iframe 내에서 버튼 발견")
-                    break
-            except: continue
-        
-        if not target:
-            # 주문이 없거나 이미 처리된 경우 모달이 안 뜰 수 있음
-            print(f"  [{label}] 모달 버튼을 찾을 수 없습니다. (주문 없음 처리)")
-            return {"site": label, "success": True, "totalRows": 0, "insertedCount": 0}
+        _target_page, _target, submit_button = await wait_for_action_target(
+            context,
+            submit_btn_selector,
+            config.DOMEGGOOK_ACTION_WAIT_SECONDS,
+            label,
+        )
+        print(f"  [{label}] 엑셀 생성요청 버튼 확인")
+    except PlaywrightTimeoutError as exc:
+        return {
+            "site": label,
+            "success": False,
+            "error": f"엑셀 생성요청 화면 대기 실패: {exc}",
+        }
 
     # 데이터파일 생성요청 클릭
-    await target.click(submit_btn_selector)
+    await submit_button.click()
     await asyncio.sleep(1)
 
     # 확인 클릭
-    await target.click("#lXlsReqNoticeBtnClose")
+    _, _, close_button = await wait_for_action_target(
+        context,
+        "#lXlsReqNoticeBtnClose",
+        config.DOMEGGOOK_ACTION_WAIT_SECONDS,
+        label,
+    )
+    await close_button.click()
     await asyncio.sleep(1)
-    print(f"PROGRESS: [{label}] 파일 생성요청 완료, 대기 중...")
-
-    # 20~50초 새로고침하며 다운받기 버튼 대기
-    DOWNLOAD_BTN = (
-        "a:has-text('다운받기'), "
-        "#lGrid > div > div.tui-grid-content-area.tui-grid-no-scroll-x"
-        " > div.tui-grid-rside-area > div.tui-grid-body-area > div"
-        " > div.tui-grid-table-container > table > tbody"
-        " > tr.tui-grid-row-odd.tui-grid-cell-current-row"
-        " > td:nth-child(3) > div > a"
+    print(
+        f"PROGRESS: [{label}] 파일 생성요청 완료, 다운받기 버튼을 "
+        f"최대 {config.DOMEGGOOK_WAIT_SECONDS}초 대기합니다..."
     )
 
-    max_attempts = max(1, config.DOMEGGOOK_WAIT_SECONDS // max(1, config.DOMEGGOOK_POLL_SECONDS))
-    for i in range(max_attempts):
-        await asyncio.sleep(config.DOMEGGOOK_POLL_SECONDS)
-        await page.reload()
-        await page.wait_for_load_state("networkidle")
-        count = await page.locator(DOWNLOAD_BTN).count()
-        if count > 0:
-            print(f"PROGRESS: [{label}] 다운받기 버튼 발견!")
-            break
-        elapsed = (i + 1) * config.DOMEGGOOK_POLL_SECONDS
-        print(f"PROGRESS: [{label}] 엑셀 생성 대기 중... ({elapsed}/{config.DOMEGGOOK_WAIT_SECONDS}s)")
-    else:
-        return {"site": label, "success": False, "error": f"엑셀 생성 시간 초과 ({config.DOMEGGOOK_WAIT_SECONDS}초)"}
+    try:
+        download_page, download_button = await wait_for_download_button(
+            page,
+            label,
+            context=context,
+        )
+    except PlaywrightTimeoutError as exc:
+        return {"site": label, "success": False, "error": f"엑셀 생성 시간 초과: {exc}"}
 
     # 다운받기 클릭
     try:
-        async with page.expect_download(timeout=30000) as dl:
-            await page.locator(DOWNLOAD_BTN).first.click()
+        async with download_page.expect_download(
+            timeout=config.DOMEGGOOK_DOWNLOAD_TIMEOUT_SECONDS * 1000
+        ) as dl:
+            await download_button.click()
 
         download = await dl.value
-        save_path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
+        save_path = os.path.join(
+            DOWNLOAD_DIR,
+            download.suggested_filename or f"{site_code}_order.xlsx",
+        )
         await download.save_as(save_path)
         print(f"PROGRESS: [{label}] 다운로드 완료: {save_path}")
         result = upload_to_intranet(save_path, site_code)
