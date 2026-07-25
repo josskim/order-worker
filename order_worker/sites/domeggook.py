@@ -3,7 +3,9 @@
 """
 import asyncio
 import os
+import re
 import time
+from datetime import datetime, timedelta, timezone
 
 from playwright.async_api import (
     Error as PlaywrightError,
@@ -27,6 +29,10 @@ DOWNLOAD_BTN_SELECTOR = (
     " > tr.tui-grid-row-odd.tui-grid-cell-current-row"
     " > td:nth-child(3) > div > a"
 )
+KST = timezone(timedelta(hours=9), name="KST")
+DOWNLOAD_ROW_TIME_PATTERN = re.compile(
+    r"(20\d{2}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})"
+)
 
 
 async def first_visible_enabled(locator):
@@ -39,6 +45,59 @@ async def first_visible_enabled(locator):
         except PlaywrightError:
             continue
     return None
+
+
+async def download_row_timestamp(candidate):
+    try:
+        row_text = await candidate.locator("xpath=ancestor::tr[1]").inner_text()
+    except PlaywrightError:
+        return None
+
+    matches = DOWNLOAD_ROW_TIME_PATTERN.findall(row_text or "")
+    if not matches:
+        return None
+
+    parsed = []
+    for date_text, time_text in matches:
+        try:
+            parsed.append(
+                datetime.strptime(
+                    f"{date_text} {time_text}",
+                    "%Y-%m-%d %H:%M:%S",
+                ).replace(tzinfo=KST)
+            )
+        except ValueError:
+            continue
+    # 표 컬럼 순서는 요청일시, 처리일시다. 처리 완료가 늦은 예전 파일이
+    # 새 요청보다 먼저 선택되지 않도록 요청일시(첫 시각)를 기준으로 삼는다.
+    return parsed[0] if parsed else None
+
+
+async def latest_visible_download(locator, not_before=None):
+    candidates = []
+    fallback = None
+    count = await locator.count()
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            if not await candidate.is_visible() or not await candidate.is_enabled():
+                continue
+        except PlaywrightError:
+            continue
+
+        fallback = fallback or candidate
+        row_timestamp = await download_row_timestamp(candidate)
+        if row_timestamp is None:
+            continue
+        if not_before and row_timestamp < not_before - timedelta(minutes=2):
+            continue
+        candidates.append((row_timestamp, candidate))
+
+    if candidates:
+        return max(candidates, key=lambda item: item[0])
+    if not_before:
+        return None
+    return (None, fallback) if fallback else None
 
 
 async def wait_for_action_target(context, selector, timeout_seconds, label):
@@ -61,6 +120,7 @@ async def wait_for_download_button(
     context=None,
     timeout_seconds=None,
     poll_seconds=None,
+    not_before=None,
 ):
     timeout_seconds = timeout_seconds or config.DOMEGGOOK_WAIT_SECONDS
     poll_seconds = poll_seconds or config.DOMEGGOOK_POLL_SECONDS
@@ -73,10 +133,12 @@ async def wait_for_download_button(
         candidate_pages = reversed(context.pages) if context else [page]
         for candidate_page in candidate_pages:
             for frame in candidate_page.frames:
-                candidate = await first_visible_enabled(
-                    frame.locator(DOWNLOAD_BTN_SELECTOR)
+                selected = await latest_visible_download(
+                    frame.locator(DOWNLOAD_BTN_SELECTOR),
+                    not_before=not_before,
                 )
-                if candidate:
+                if selected:
+                    row_timestamp, candidate = selected
                     elapsed = min(
                         timeout_seconds,
                         max(
@@ -86,7 +148,8 @@ async def wait_for_download_button(
                     )
                     print(
                         f"PROGRESS: [{label}] 다운받기 버튼 활성화 확인 "
-                        f"({elapsed}초, {attempt}회 확인)"
+                        f"({elapsed}초, {attempt}회 확인"
+                        f"{f', 생성시각 {row_timestamp:%Y-%m-%d %H:%M:%S}' if row_timestamp else ''})"
                     )
                     return candidate_page, candidate
 
@@ -199,6 +262,7 @@ async def run_one(site_code, user_id, password, label, page, context):
         }
 
     # 데이터파일 생성요청 클릭
+    requested_at = datetime.now(KST)
     await submit_button.click()
     await asyncio.sleep(1)
 
@@ -211,6 +275,11 @@ async def run_one(site_code, user_id, password, label, page, context):
     )
     await close_button.click()
     await asyncio.sleep(1)
+    await page.goto(
+        "https://domeggook.com/sc/excel/getOrderList",
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
     print(
         f"PROGRESS: [{label}] 파일 생성요청 완료, 다운받기 버튼을 "
         f"최대 {config.DOMEGGOOK_WAIT_SECONDS}초 대기합니다..."
@@ -221,6 +290,7 @@ async def run_one(site_code, user_id, password, label, page, context):
             page,
             label,
             context=context,
+            not_before=requested_at,
         )
     except PlaywrightTimeoutError as exc:
         return {"site": label, "success": False, "error": f"엑셀 생성 시간 초과: {exc}"}
