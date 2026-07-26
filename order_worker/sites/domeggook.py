@@ -33,6 +33,9 @@ KST = timezone(timedelta(hours=9), name="KST")
 DOWNLOAD_ROW_TIME_PATTERN = re.compile(
     r"(20\d{2}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})"
 )
+ORDER_LIST_COUNT_PATTERN = re.compile(
+    r"발주\s*[·.ㆍ]?\s*발송\s*목록\s*\(\s*총\s*([\d,]+)\s*건\s*\)"
+)
 
 
 async def first_visible_enabled(locator):
@@ -45,6 +48,52 @@ async def first_visible_enabled(locator):
         except PlaywrightError:
             continue
     return None
+
+def parse_order_list_count(text):
+    """발주·발송 목록 제목에서 현재 주문 건수를 읽는다."""
+    match = ORDER_LIST_COUNT_PATTERN.search(text or "")
+    return int(match.group(1).replace(",", "")) if match else None
+
+
+async def detect_order_list_count(page, timeout_seconds=15, poll_seconds=0.5):
+    """목록 건수 또는 실제 그리드 행을 확인하고, 빈 목록은 0으로 반환한다."""
+    deadline = time.monotonic() + timeout_seconds
+    body_text = ""
+
+    while time.monotonic() < deadline:
+        try:
+            body_text = await page.locator("body").inner_text()
+            parsed = parse_order_list_count(body_text)
+            if parsed is not None:
+                return parsed
+
+            rows = page.locator("#lGrid .tui-grid-body-area tbody tr")
+            row_count = await rows.count()
+            if row_count > 0:
+                return row_count
+        except PlaywrightError:
+            pass
+
+        await asyncio.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
+
+    # 발주·발송 화면까지 진입했지만 목록 영역/행이 끝내 생성되지 않은 경우도
+    # 사이트의 빈 목록 표현으로 본다. 로그인 실패 페이지는 여기서 성공 처리하지 않는다.
+    if "발주" in body_text and "발송" in body_text:
+        return 0
+    return None
+
+
+def no_order_result(label):
+    return {
+        "site": label,
+        "success": True,
+        "noData": True,
+        "message": "주문서 없음",
+        "totalRows": 0,
+        "insertedCount": 0,
+        "duplicateCount": 0,
+    }
+
 
 
 async def download_row_timestamp(candidate):
@@ -204,6 +253,18 @@ async def run_one(site_code, user_id, password, label, page, context):
     await page.click("#orderStatusZone > div.pContent > div.halfZone.pLeft > ul > li:nth-child(2)")
     await page.wait_for_load_state("networkidle")
     print(f"PROGRESS: [{label}] 발주.발송 페이지 이동 완료")
+
+    order_count = await detect_order_list_count(page)
+    if order_count == 0:
+        print(f"PROGRESS: [{label}] 발주·발송 목록 0건 - 주문서 없음")
+        return no_order_result(label)
+    if order_count is None:
+        return {
+            "site": label,
+            "success": False,
+            "error": "발주·발송 목록의 주문 건수를 확인하지 못했습니다.",
+        }
+    print(f"PROGRESS: [{label}] 발주·발송 목록 {order_count}건 확인")
 
     # 전체선택 체크박스 클릭
     print(f"PROGRESS: [{label}] 전체선택 체크박스 클릭 중...")

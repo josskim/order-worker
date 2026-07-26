@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from order_worker.sites.domeggook import (
     download_row_timestamp,
     latest_visible_download,
+    no_order_result,
+    parse_order_list_count,
     wait_for_action_target,
     wait_for_download_button,
 )
@@ -108,6 +110,20 @@ class FakeContext:
 
 
 class DomeggookWaitTests(unittest.IsolatedAsyncioTestCase):
+    def test_order_list_count_parses_zero_orders(self):
+        self.assertEqual(parse_order_list_count("발주·발송 목록 (총 0건)"), 0)
+
+    def test_order_list_count_parses_comma_separated_count(self):
+        self.assertEqual(parse_order_list_count("발주.발송 목록 (총 1,234건)"), 1234)
+
+    def test_no_order_result_is_successful_and_explicit(self):
+        result = no_order_result("F도매꾹")
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["noData"])
+        self.assertEqual(result["message"], "주문서 없음")
+        self.assertEqual(result["totalRows"], 0)
+
     async def test_download_button_waits_through_variable_generation_delay(self):
         page = FakePage(available_after_reloads=3)
 
