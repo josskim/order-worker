@@ -13,6 +13,7 @@ USER_ID = "jupraha"
 PASSWORD = "hare2580@@"
 NAVIGATION_TIMEOUT_MS = 60000
 NAVIGATION_ATTEMPTS = 2
+EXCEL_DOWNLOAD_SELECTOR = 'a[href*="seller_odr_excel.php?code=seller_odr_3"]'
 
 
 async def goto_with_retry(
@@ -36,6 +37,17 @@ async def goto_with_retry(
             print(f"  [{LABEL}] 페이지 이동 재시도 {attempt}/{attempts}: {url}")
             await page.wait_for_timeout(1000 * attempt)
     raise RuntimeError(f"페이지 이동 실패: {url} / {last_error}")
+
+
+async def find_visible_excel_button(page: Page):
+    """반응형 화면에 중복 렌더링된 버튼 중 실제 표시 버튼을 찾는다."""
+    candidates = page.locator(EXCEL_DOWNLOAD_SELECTOR)
+    candidate_count = await candidates.count()
+    for index in range(candidate_count):
+        candidate = candidates.nth(index)
+        if await candidate.is_visible():
+            return candidate
+    return None
 
 async def run_one(page, context):
     print(f"PROGRESS: [{LABEL}] 로그인 중...")
@@ -106,13 +118,23 @@ async def run_one(page, context):
 
     # 3. 검색결과 엑셀저장
     print(f"PROGRESS: [{LABEL}] 엑셀 다운로드 시도 중...")
-    excel_btn = 'a[href*="seller_odr_excel.php?code=seller_odr_3"]'
-    
+    shipping_order_count = await page.locator('input[name="chk[]"]').count()
+    if shipping_order_count == 0:
+        print(f"  [{LABEL}] 배송준비 주문 없음")
+        return {
+            "site": LABEL,
+            "success": True,
+            "noData": True,
+            "totalRows": 0,
+            "insertedCount": 0,
+        }
+
     try:
-        button = page.locator(excel_btn)
-        if await button.count() == 0:
-            print(f"  [{LABEL}] 엑셀 버튼 없음 (주문 없음)")
-            return {"site": LABEL, "success": True, "totalRows": 0, "insertedCount": 0}
+        button = await find_visible_excel_button(page)
+        if button is None:
+            raise RuntimeError(
+                f"배송준비 주문 {shipping_order_count}건이 있지만 엑셀 저장 버튼을 찾지 못했습니다."
+            )
 
         async with page.expect_download(timeout=30000) as dl:
             await button.click(no_wait_after=True, timeout=15000)
@@ -125,9 +147,8 @@ async def run_one(page, context):
         result = upload_to_intranet(save_path, SITE_CODE)
         return {"site": LABEL, **result}
     except Exception as e:
-        # "출력할 자료가 없습니다" 알림창 등으로 인한 실패 처리
-        print(f"  [{LABEL}] 엑셀 다운로드 불가 (주문 없음 추정): {str(e)}")
-        return {"site": LABEL, "success": True, "totalRows": 0, "insertedCount": 0}
+        print(f"  [{LABEL}] 엑셀 다운로드 실패: {str(e)}")
+        return {"site": LABEL, "success": False, "error": str(e)}
 
 async def run():
     async with async_playwright() as p:
