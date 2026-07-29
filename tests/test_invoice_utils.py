@@ -5,7 +5,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from order_worker.sites.invoice_utils import download_invoice_export_with_count, parse_success_fail_counts
+import xlrd
+import xlwt
+
+from order_worker.sites.invoice_utils import (
+    download_invoice_export_with_count,
+    parse_success_fail_counts,
+    resave_xls_with_excel,
+)
 
 
 class ParseSuccessFailCountsTests(unittest.TestCase):
@@ -48,6 +55,28 @@ class DownloadInvoiceExportTests(unittest.TestCase):
 
         self.assertEqual(path.name, "domegod.xls")
         self.assertEqual(row_count, 3)
+
+
+class ResaveSpecialOfferXlsTests(unittest.TestCase):
+    def test_resaves_biff8_without_windows_excel(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "special.xls"
+            source = xlwt.Workbook(encoding="utf-8")
+            sheet = source.add_sheet("엑셀일괄배송처리")
+            sheet.write(0, 0, "일련번호")
+            sheet.write(0, 1, "송장번호")
+            sheet.write(1, 0, "26072912172635")
+            sheet.write(1, 1, "1234567890")
+            source.save(str(path))
+
+            resave_xls_with_excel(path)
+
+            result = xlrd.open_workbook(str(path), on_demand=True)
+            result_sheet = result.sheet_by_name("엑셀일괄배송처리")
+            self.assertEqual(result_sheet.cell_value(0, 0), "일련번호")
+            self.assertEqual(result_sheet.cell_value(1, 0), "26072912172635")
+            self.assertEqual(result_sheet.cell_value(1, 1), "1234567890")
+            result.release_resources()
 
 
 if __name__ == "__main__":

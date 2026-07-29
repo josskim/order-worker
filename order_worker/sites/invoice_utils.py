@@ -4,11 +4,12 @@ import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
-import subprocess
 import tempfile
 import shutil
 
 import requests
+import xlrd
+import xlwt
 
 from order_worker import config
 
@@ -119,44 +120,27 @@ def resave_xls_with_excel(path: Path) -> None:
 
     temp_dir = Path(tempfile.mkdtemp(prefix="invoice-xls-"))
     output_path = temp_dir / "resaved.xls"
-    script_path = temp_dir / "resave.ps1"
     try:
-        script_path.write_text(
-            """
-param([string]$InputPath, [string]$OutputPath)
-$excel = $null
-$workbook = $null
-try {
-    $excel = New-Object -ComObject Excel.Application
-    $excel.DisplayAlerts = $false
-    $workbook = $excel.Workbooks.Open($InputPath)
-    $workbook.SaveAs($OutputPath, 56)
-    $workbook.Close($false)
-    $excel.Quit()
-} finally {
-    if ($workbook -ne $null) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null }
-    if ($excel -ne $null) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null }
-    [GC]::Collect()
-    [GC]::WaitForPendingFinalizers()
-}
-""",
-            encoding="utf-8",
-        )
-        subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script_path),
-                str(path),
-                str(output_path),
-            ],
-            check=True,
-            timeout=60,
-            capture_output=True,
-        )
+        source_book = xlrd.open_workbook(str(path), on_demand=True)
+        output_book = xlwt.Workbook(encoding="utf-8")
+        text_style = xlwt.easyxf(num_format_str="@")
+
+        for source_sheet in source_book.sheets():
+            output_sheet = output_book.add_sheet(source_sheet.name[:31] or "Sheet1")
+            for row_index in range(source_sheet.nrows):
+                for column_index in range(source_sheet.ncols):
+                    cell = source_sheet.cell(row_index, column_index)
+                    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                        continue
+                    output_sheet.write(
+                        row_index,
+                        column_index,
+                        str(cell.value),
+                        text_style,
+                    )
+
+        output_book.save(str(output_path))
+        source_book.release_resources()
         shutil.copy2(output_path, path)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
