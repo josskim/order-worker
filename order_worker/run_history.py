@@ -95,6 +95,24 @@ def claim_job(*, job_id: str, task: str) -> ClaimResult:
     )
 
 
+def is_job_cancelled(*, job_id: str, task: str) -> bool:
+    response = requests.post(
+        config.INTRANET_JOB_API_URL,
+        headers=_headers(),
+        json={
+            "action": "status",
+            "job_id": job_id,
+            "task": task,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("success"):
+        raise RuntimeError(payload.get("error") or "Job status check failed")
+    return bool(payload.get("cancelled"))
+
+
 def complete_job(
     *,
     job_id: str,

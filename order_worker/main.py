@@ -11,7 +11,7 @@ import requests
 from order_worker import config
 from order_worker.lock import WorkerLock
 from order_worker.notifier import build_invoice_upload_summary_message, build_summary_message, send_telegram_message
-from order_worker.run_history import claim_job, claim_run, complete_job, complete_run
+from order_worker.run_history import claim_job, claim_run, complete_job, complete_run, is_job_cancelled
 from order_worker.sites import (
     domeggook,
     domeggook_invoice,
@@ -59,6 +59,15 @@ SPECIALOFFER_INVOICE_SITES = {"special"}
 SISTER_INVOICE_SITES = {"sister"}
 KST = timezone(timedelta(hours=9), name="KST")
 ALL_INVOICE_TASK_KEY = "invoice-upload-real-fake"
+
+
+class JobCancelled(Exception):
+    pass
+
+
+def ensure_job_active(should_cancel=None) -> None:
+    if should_cancel and should_cancel():
+        raise JobCancelled("User cancelled the job")
 
 
 def format_result(result: dict) -> str:
@@ -215,20 +224,23 @@ def cleanup_downloads() -> None:
             path.unlink(missing_ok=True)
 
 
-async def run_sites(site_names: list[str]) -> list[dict]:
+async def run_sites(site_names: list[str], should_cancel=None) -> list[dict]:
     results: list[dict] = []
     cleanup_downloads()
 
-    for site_name in site_names:
-        runner = SITE_RUNNERS[site_name]
-        print(f"PROGRESS: [{site_name}] start")
-        try:
-            site_results = await runner()
-            results.extend(site_results)
-        except Exception as exc:
-            results.append({"site": site_name, "success": False, "error": str(exc)})
-
-    cleanup_downloads()
+    try:
+        for site_name in site_names:
+            ensure_job_active(should_cancel)
+            runner = SITE_RUNNERS[site_name]
+            print(f"PROGRESS: [{site_name}] start")
+            try:
+                site_results = await runner()
+                results.extend(site_results)
+            except Exception as exc:
+                results.append({"site": site_name, "success": False, "error": str(exc)})
+            ensure_job_active(should_cancel)
+    finally:
+        cleanup_downloads()
     return results
 
 
@@ -253,6 +265,7 @@ def post_intranet_log(run_id: str, results: list[dict]) -> None:
 async def run_command(
     args: argparse.Namespace,
     result_sink: dict | None = None,
+    should_cancel=None,
 ) -> int:
     config.ensure_directories()
     site_names = list(SITE_RUNNERS.keys()) if args.all else args.site
@@ -260,7 +273,7 @@ async def run_command(
 
     with WorkerLock(config.LOCK_FILE):
         print(f"PROGRESS: [worker] run_id={run_id}")
-        results = await run_sites(site_names)
+        results = await run_sites(site_names, should_cancel=should_cancel)
 
     normalize_order_no_data_results(results)
 
@@ -294,6 +307,7 @@ async def run_command(
 async def upload_invoices_command(
     args: argparse.Namespace,
     result_sink: dict | None = None,
+    should_cancel=None,
 ) -> int:
     config.ensure_directories()
     site_names = list(INVOICE_UPLOAD_SITES.keys()) if args.all else args.site
@@ -315,29 +329,36 @@ async def upload_invoices_command(
         specialoffer_sites = [site for site in site_names if site in SPECIALOFFER_INVOICE_SITES]
         sister_sites = [site for site in site_names if site in SISTER_INVOICE_SITES]
         if ownerclan_sites:
+            ensure_job_active(should_cancel)
             results.extend(
                 await ownerclan_invoice.run(ownerclan_sites, args.type, start_date, end_date, preview=args.preview)
             )
         if onchannel_sites:
+            ensure_job_active(should_cancel)
             results.extend(
                 await onchannel_invoice.run(onchannel_sites, args.type, start_date, end_date, preview=args.preview)
             )
         if domeggook_sites:
+            ensure_job_active(should_cancel)
             results.extend(
                 await domeggook_invoice.run(domeggook_sites, args.type, start_date, end_date, preview=args.preview)
             )
         if domesin_sites:
+            ensure_job_active(should_cancel)
             results.extend(
                 await domesin_invoice.run(domesin_sites, args.type, start_date, end_date, preview=args.preview)
             )
         if specialoffer_sites:
+            ensure_job_active(should_cancel)
             results.extend(
                 await specialoffer_invoice.run(specialoffer_sites, args.type, start_date, end_date, preview=args.preview)
             )
         if sister_sites:
+            ensure_job_active(should_cancel)
             results.extend(
                 await sister_invoice.run(sister_sites, args.type, start_date, end_date, preview=args.preview)
             )
+        ensure_job_active(should_cancel)
 
     normalize_invoice_no_data_results(results)
     if not args.preview:
@@ -368,7 +389,7 @@ async def upload_invoices_command(
     return exit_code
 
 
-async def upload_all_invoice_types_command(result_sink: dict | None = None) -> int:
+async def upload_all_invoice_types_command(result_sink: dict | None = None, should_cancel=None) -> int:
     config.ensure_directories()
     run_date = datetime.now(KST).strftime("%Y-%m-%d")
     run_id = f"invoice-all-{uuid.uuid4().hex[:8]}"
@@ -399,6 +420,7 @@ async def upload_all_invoice_types_command(result_sink: dict | None = None) -> i
     unexpected_errors: list[str] = []
     try:
         for invoice_type in ("real", "fake"):
+            ensure_job_active(should_cancel)
             invoice_details: dict = {}
             args = argparse.Namespace(
                 all=True,
@@ -409,7 +431,11 @@ async def upload_all_invoice_types_command(result_sink: dict | None = None) -> i
                 preview=False,
             )
             try:
-                exit_code = await upload_invoices_command(args, invoice_details)
+                exit_code = await upload_invoices_command(
+                    args,
+                    invoice_details,
+                    should_cancel=should_cancel,
+                )
                 type_results[invoice_type] = {
                     **invoice_details,
                     "exit_code": exit_code,
@@ -485,18 +511,28 @@ async def run_job_command(task: str) -> int:
         print(f"PROGRESS: [job] {job_id} already claimed, status={claim.existing_status or 'unknown'}")
         return 0
 
+    def should_cancel() -> bool:
+        try:
+            return is_job_cancelled(job_id=job_id, task=task)
+        except Exception as exc:
+            print(f"PROGRESS: [job] cancellation check failed, continuing: {exc}")
+            return False
+
     details: dict = {}
     try:
+        ensure_job_active(should_cancel)
         if task == "collect":
             exit_code = await run_command(
                 argparse.Namespace(all=True, site=None),
                 details,
+                should_cancel=should_cancel,
             )
         elif task == "invoices":
-            exit_code = await upload_all_invoice_types_command(details)
+            exit_code = await upload_all_invoice_types_command(details, should_cancel=should_cancel)
         else:
             raise ValueError(f"Unsupported job task: {task}")
 
+        ensure_job_active(should_cancel)
         status = str(details.get("status") or ("failed" if exit_code else "succeeded"))
         complete_job(
             job_id=job_id,
@@ -505,6 +541,9 @@ async def run_job_command(task: str) -> int:
             result=details,
         )
         return 1 if status == "failed" else 0
+    except JobCancelled:
+        print(f"PROGRESS: [job] {job_id} cancelled by user")
+        return 0
     except Exception as exc:
         try:
             complete_job(
