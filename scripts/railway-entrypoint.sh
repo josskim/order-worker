@@ -28,7 +28,7 @@ case "$task" in
     exec python -m order_worker.main upload-invoices-all
     ;;
   invoices-job)
-    exec python -m order_worker.main run-job --task invoices
+    exec python -m order_worker.main run-job --task "${ORDER_WORKER_JOB_TASK:-invoices}"
     ;;
   custom)
     if [ -z "${ORDER_WORKER_COMMAND:-}" ]; then

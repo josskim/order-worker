@@ -11,9 +11,11 @@ For intranet button-triggered runs, use two fixed services:
 - `order-worker-collect`: `ORDER_WORKER_TASK=collect-job`
 - `order-worker-invoices`: `ORDER_WORKER_TASK=invoices-job`
 
-The intranet sets a unique `ORDER_WORKER_JOB_ID` and redeploys the matching
-service. Repeated deployments with an already completed job ID exit without
-running the vendor automation again.
+The intranet sets a unique `ORDER_WORKER_JOB_ID` plus an
+`ORDER_WORKER_JOB_TASK`, then redeploys the matching service. Invoice buttons
+use `invoices-real` and `invoices-fake`, so actual shipping invoices and fake
+invoices are never run implicitly as one operation. Repeated deployments with
+an already completed job ID exit without running vendor automation again.
 
 ### Order collection
 
@@ -33,10 +35,12 @@ running the vendor automation again.
   - `ORDER_WORKER_RUNTIME_DIR=/tmp/order-worker`
   - `ORDER_WORKER_HEADLESS=1`
 
-The invoice service creates a new run-history entry for every invocation, then
-runs `real` followed by `fake`. Completed jobs can run again on the same KST
-calendar date, while the intranet job queue blocks another invoice job only
-while one is actively queued or running.
+The legacy scheduled invoice command runs `real` followed by `fake`. The
+intranet does not use that combined command: the `출고송장실행` button requests
+only `invoices-real`, and the `가송장실행` button requests only
+`invoices-fake`. Because both buttons redeploy the same invoice service, the
+intranet job queue prevents either invoice task from starting while another
+invoice task is queued or running.
 
 Railway evaluates cron schedules in UTC. Korea Standard Time is UTC+9, so subtract 9 hours from the local time.
 
@@ -67,6 +71,8 @@ TELEGRAM_CHAT_ID=...
 - `scripts/railway-entrypoint.sh` maps `ORDER_WORKER_TASK` to the existing commands:
   - `collect` -> `python -m order_worker.main run --all`
   - `invoices` -> `python -m order_worker.main upload-invoices-all`
+  - `collect-job` -> `python -m order_worker.main run-job --task collect`
+  - `invoices-job` -> `python -m order_worker.main run-job --task $ORDER_WORKER_JOB_TASK`
   - `sites` -> `python -m order_worker.main sites`
 
 ## Notes

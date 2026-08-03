@@ -529,6 +529,21 @@ async def run_job_command(task: str) -> int:
             )
         elif task == "invoices":
             exit_code = await upload_all_invoice_types_command(details, should_cancel=should_cancel)
+        elif task in {"invoices-real", "invoices-fake"}:
+            invoice_type = "real" if task == "invoices-real" else "fake"
+            exit_code = await upload_invoices_command(
+                argparse.Namespace(
+                    all=True,
+                    site=None,
+                    type=invoice_type,
+                    start_date=None,
+                    end_date=None,
+                    preview=False,
+                ),
+                details,
+                should_cancel=should_cancel,
+            )
+            details["invoice_type"] = invoice_type
         else:
             raise ValueError(f"Unsupported job task: {task}")
 
@@ -581,7 +596,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a DB run history entry and upload real invoices followed by fake invoices.",
     )
     job_parser = subparsers.add_parser("run-job", help="Run a DB-claimed Railway manual job")
-    job_parser.add_argument("--task", choices=["collect", "invoices"], required=True)
+    job_parser.add_argument(
+        "--task",
+        choices=["collect", "invoices", "invoices-real", "invoices-fake"],
+        required=True,
+    )
     subparsers.add_parser("sites", help="List supported sites")
     subparsers.add_parser("invoice-sites", help="List supported invoice upload sites")
     return parser
