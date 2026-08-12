@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from datetime import date, timedelta
 from pathlib import Path
@@ -94,9 +95,21 @@ def calculate_retry_start_date(export_type: str, start_date: str) -> str:
     return (parsed - timedelta(days=RETRY_LOOKBACK_DAYS - 1)).isoformat()
 
 
-def parse_result(text: str, expected_count: int | None = None, dialog_messages: list[str] | None = None) -> dict:
+def _visible_response_text(value: str) -> str:
+    without_scripts = re.sub(r"<script\b[^>]*>(.*?)</script>", r" \1 ", value, flags=re.IGNORECASE | re.DOTALL)
+    without_tags = re.sub(r"<[^>]+>", " ", without_scripts)
+    return re.sub(r"\s+", " ", html.unescape(without_tags)).strip()
+
+
+def parse_result(
+    text: str,
+    expected_count: int | None = None,
+    dialog_messages: list[str] | None = None,
+    response_texts: list[str] | None = None,
+) -> dict:
     dialogs = dialog_messages or []
-    combined_text = "\n".join([text, *dialogs])
+    responses = [_visible_response_text(value) for value in (response_texts or [])]
+    combined_text = "\n".join([text, *dialogs, *responses])
     uploaded = _parse_count(combined_text, r"성공|완료|정상\s*처리|배송\s*처리")
     failed = _parse_count(combined_text, r"실패|오류|에러")
 
@@ -107,15 +120,15 @@ def parse_result(text: str, expected_count: int | None = None, dialog_messages: 
         failed_rows = len(re.findall(r"\t(?:실패|오류|에러)(?:\s|$)", combined_text))
         failed = failed_rows or 0
 
-    explicit_success_dialog = any(
+    explicit_success_confirmation = any(
         re.search(r"(?:완료되었습니다|정상적으로\s*처리|등록되었습니다)", message)
-        for message in dialogs
+        for message in [*dialogs, *responses]
     )
     already_processed = bool(re.search(r"이미\s*(?:배송|발송|송장|등록).*?(?:처리|완료|등록)", combined_text))
     already_processed_count = 0
     confirmed_count = uploaded or 0
 
-    if expected_count and not failed and uploaded is None and explicit_success_dialog:
+    if expected_count and not failed and uploaded is None and explicit_success_confirmation:
         confirmed_count = expected_count
         uploaded = expected_count
     elif expected_count == 1 and not failed and uploaded is None and already_processed:
@@ -147,14 +160,32 @@ def parse_result(text: str, expected_count: int | None = None, dialog_messages: 
 
 async def submit_upload(page: Page, expected_count: int | None, dialog_messages: list[str]) -> dict:
     print(f"PROGRESS: [{LABEL}] 업로드하기 버튼 클릭...")
-    await click_upload_button(page)
+    response_texts: list[str] = []
+    try:
+        async with page.expect_response(
+            lambda response: "ship_excel_insert_proc.html" in response.url,
+            timeout=30000,
+        ) as response_info:
+            await click_upload_button(page)
+        response = await response_info.value
+        try:
+            response_texts.append(await response.text())
+        except Exception as exc:
+            print(f"PROGRESS: [{LABEL}] 업로드 응답 본문 읽기 실패: {exc}")
+    except Exception as exc:
+        print(f"PROGRESS: [{LABEL}] 업로드 처리 응답 대기 실패: {exc}")
     try:
         await page.wait_for_load_state("networkidle", timeout=30000)
     except Exception:
         pass
     await page.wait_for_timeout(2000)
     text = await page.locator("body").inner_text(timeout=10000)
-    result = parse_result(text, expected_count=expected_count, dialog_messages=dialog_messages)
+    result = parse_result(
+        text,
+        expected_count=expected_count,
+        dialog_messages=dialog_messages,
+        response_texts=response_texts,
+    )
     print(f"PROGRESS: [{LABEL}] 업로드 완료 {result['uploadedCount']}건, 실패 {result['failedCount']}건")
     return result
 

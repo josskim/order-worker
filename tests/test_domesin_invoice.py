@@ -34,6 +34,18 @@ class DomesinInvoiceResultTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["uploadedCount"], 3)
 
+    def test_uses_submit_response_when_page_returns_to_empty_upload_form(self) -> None:
+        result = parse_result(
+            "송장엑셀등록",
+            expected_count=1,
+            response_texts=[
+                '<script>alert("송장번호가 등록되었습니다."); history.back();</script>'
+            ],
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["confirmedCount"], 1)
+
     def test_single_already_processed_order_is_confirmed(self) -> None:
         result = parse_result("이미 배송처리된 주문입니다.", expected_count=1)
 
