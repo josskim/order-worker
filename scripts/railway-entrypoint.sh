@@ -22,7 +22,7 @@ case "$task" in
     exec python -m order_worker.main run --all
     ;;
   collect-job)
-    exec python -m order_worker.main run-job --task collect
+    exec python -m order_worker.main run-job --task "${ORDER_WORKER_JOB_TASK:-collect}"
     ;;
   invoices)
     exec python -m order_worker.main upload-invoices-all

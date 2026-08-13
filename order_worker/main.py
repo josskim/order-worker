@@ -21,6 +21,7 @@ from order_worker.sites import (
     onchannel_invoice,
     ownerclan,
     ownerclan_invoice,
+    ownerclan_status,
     sister,
     sister_invoice,
     specialoffer,
@@ -544,6 +545,21 @@ async def run_job_command(task: str) -> int:
                 should_cancel=should_cancel,
             )
             details["invoice_type"] = invoice_type
+        elif task == "product-status":
+            request = ((claim.job or {}).get("result") or {}).get("request") or {}
+            action = str(request.get("action") or "")
+            product_code = str(request.get("productCode") or "")
+            option_name = request.get("optionName")
+            sites = request.get("sites") or []
+            if sites != ["ownerclan"]:
+                raise ValueError(f"Unsupported product-status sites: {sites}")
+            result = await ownerclan_status.run(
+                action=action,
+                product_code=product_code,
+                option_name=str(option_name) if option_name else None,
+            )
+            details.update({"request": request, "summary": [result]})
+            exit_code = 0 if result.get("success") else 1
         else:
             raise ValueError(f"Unsupported job task: {task}")
 
@@ -598,9 +614,15 @@ def build_parser() -> argparse.ArgumentParser:
     job_parser = subparsers.add_parser("run-job", help="Run a DB-claimed Railway manual job")
     job_parser.add_argument(
         "--task",
-        choices=["collect", "invoices", "invoices-real", "invoices-fake"],
+        choices=["collect", "invoices", "invoices-real", "invoices-fake", "product-status"],
         required=True,
     )
+    status_parser = subparsers.add_parser("product-status", help="Update a vendor product or option sales status")
+    status_parser.add_argument("--site", choices=["ownerclan"], default="ownerclan")
+    status_parser.add_argument("--action", choices=["option-soldout", "product-soldout"], required=True)
+    status_parser.add_argument("--product-code", required=True)
+    status_parser.add_argument("--option-name")
+    status_parser.add_argument("--preview", action="store_true")
     subparsers.add_parser("sites", help="List supported sites")
     subparsers.add_parser("invoice-sites", help="List supported invoice upload sites")
     return parser
@@ -631,6 +653,19 @@ def main() -> int:
 
     if args.command == "run-job":
         return asyncio.run(run_job_command(args.task))
+
+    if args.command == "product-status":
+        result = asyncio.run(
+            ownerclan_status.run(
+                action=args.action,
+                product_code=args.product_code,
+                option_name=args.option_name,
+                preview=args.preview,
+            )
+        )
+        print("__JSON__")
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("success") else 1
 
     parser.print_help()
     return 2

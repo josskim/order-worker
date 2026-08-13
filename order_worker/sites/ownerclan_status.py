@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import asyncio
+import re
+import unicodedata
+from typing import Any
+
+from playwright.async_api import Browser, Page, async_playwright
+
+from order_worker import config
+from order_worker.sites.ownerclan import ACCOUNTS
+
+
+MANAGEMENT_URL = "https://ownerclan.com/vender/product_myprd.php"
+LOGIN_URL = "https://ownerclan.com/vender/login.php"
+
+
+def _normalize(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).strip().casefold()
+
+
+def _target_tokens(option_name: str) -> list[str]:
+    return [_normalize(value) for value in re.split(r"\s*(?:/|\||,)\s*", option_name) if value.strip()]
+
+
+def option_values_match(option_name: str, remote_values: list[str]) -> bool:
+    target = _target_tokens(option_name)
+    remote = [_normalize(value) for value in remote_values if value.strip()]
+    if not target:
+        return False
+    if len(target) == 1:
+        return target[0] in remote
+    return target == remote
+
+
+async def _accept_dialog(dialog) -> None:
+    await dialog.accept()
+
+
+async def _login(page: Page) -> None:
+    _, user_id, password, label = ACCOUNTS[0]
+    print(f"PROGRESS: [{label}] 로그인 중...")
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    await page.fill('input[name="id"]', user_id)
+    await page.fill('input[name="passwd"]', password)
+    await page.click('input[type="submit"]')
+    await page.wait_for_load_state("networkidle")
+
+
+async def _search_product(page: Page, product_code: str):
+    for attempt in range(2):
+        await page.goto(MANAGEMENT_URL, wait_until="networkidle")
+        search_input = page.locator('input[name="search"]')
+        if await search_input.count() == 1 and await search_input.is_visible():
+            break
+        if attempt == 0:
+            print("PROGRESS: [오너클랜] 로그인 세션 재확인...")
+            await _login(page)
+    else:
+        raise RuntimeError(f"오너클랜 상품관리 화면에 접근하지 못했습니다: {page.url}")
+
+    await page.fill('input[name="search"]', product_code)
+    await page.locator('button[onclick*="SearchPrd"]').click()
+    await page.wait_for_load_state("networkidle")
+
+    edit_links = page.locator('a[href*="GoPrdinfo"]')
+    count = await edit_links.count()
+    if count != 1:
+        raise RuntimeError(f"오너클랜 상품 검색 결과가 1건이 아닙니다: {product_code} ({count}건)")
+    row = edit_links.first.locator("xpath=ancestor::tr[1]")
+    row_text = await row.inner_text()
+    if _normalize(product_code) not in _normalize(row_text):
+        raise RuntimeError(f"오너클랜 검색 결과에서 상품코드를 확인하지 못했습니다: {product_code}")
+    return row, edit_links.first
+
+
+async def _open_editor(page: Page, edit_link) -> Page:
+    async with page.expect_popup(timeout=15000) as popup_info:
+        await edit_link.click()
+    editor = await popup_info.value
+    await editor.wait_for_load_state("networkidle")
+    editor.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
+    return editor
+
+
+async def _open_option_editor(editor: Page) -> Page:
+    async with editor.expect_popup(timeout=15000) as popup_info:
+        await editor.locator("#btn_option").click()
+    option_page = await popup_info.value
+    await option_page.wait_for_load_state("networkidle")
+    option_page.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
+    return option_page
+
+
+async def _find_option_row(option_page: Page, option_name: str) -> tuple[int, list[str], str]:
+    first_values = option_page.locator(".opValName1")
+    second_values = option_page.locator(".opValName2")
+    statuses = option_page.locator("select.opStatus")
+    matches: list[tuple[int, list[str], str]] = []
+
+    for index in range(await statuses.count()):
+        values: list[str] = []
+        if index < await first_values.count():
+            values.append(await first_values.nth(index).input_value())
+        if index < await second_values.count():
+            values.append(await second_values.nth(index).input_value())
+        if option_values_match(option_name, values):
+            matches.append((index, values, await statuses.nth(index).input_value()))
+
+    if len(matches) != 1:
+        found = ["/".join(item[1]) for item in matches]
+        raise RuntimeError(f"오너클랜 옵션을 한 건으로 특정하지 못했습니다: {option_name} (일치: {found})")
+    return matches[0]
+
+
+async def _verify_option_soldout(page: Page, product_code: str, option_name: str) -> list[str]:
+    _, edit_link = await _search_product(page, product_code)
+    editor = await _open_editor(page, edit_link)
+    try:
+        option_page = await _open_option_editor(editor)
+        try:
+            _, values, status = await _find_option_row(option_page, option_name)
+            if status != "SOLDOUT":
+                raise RuntimeError(f"오너클랜 옵션 품절 저장을 확인하지 못했습니다: {'/'.join(values)}")
+            return values
+        finally:
+            if not option_page.is_closed():
+                await option_page.close()
+    finally:
+        if not editor.is_closed():
+            await editor.close()
+
+
+async def option_soldout(page: Page, product_code: str, option_name: str, preview: bool = False) -> dict[str, Any]:
+    _, edit_link = await _search_product(page, product_code)
+    editor = await _open_editor(page, edit_link)
+    try:
+        option_page = await _open_option_editor(editor)
+        index, values, current_status = await _find_option_row(option_page, option_name)
+        label = "/".join(values)
+        if current_status == "SOLDOUT":
+            return {"success": True, "alreadyProcessed": True, "matchedOption": label}
+        if preview:
+            return {"success": True, "preview": True, "matchedOption": label, "currentStatus": current_status}
+
+        print(f"PROGRESS: [오너클랜] {product_code} / {label} 옵션 품절 선택...")
+        await option_page.locator("select.opStatus").nth(index).select_option("SOLDOUT")
+        await option_page.locator('button[onclick*="setupOption"]').click()
+        await editor.wait_for_function(
+            "() => { try { const data = JSON.parse(document.querySelector('#optionsData').value); return data.optionList.some(v => v.status === 'SOLDOUT' || v.sale_status === 'SOLDOUT' || v.opStatus === 'SOLDOUT'); } catch (_) { return true; } }",
+            timeout=10000,
+        )
+
+        print(f"PROGRESS: [오너클랜] {product_code} 상품 수정 저장...")
+        await editor.locator('a[href*="formSubmit(\'update\')"]').click()
+        await page.wait_for_timeout(2500)
+    finally:
+        if not editor.is_closed():
+            await editor.close()
+
+    verified_values = await _verify_option_soldout(page, product_code, option_name)
+    return {"success": True, "matchedOption": "/".join(verified_values), "verified": True}
+
+
+async def product_soldout(page: Page, product_code: str, preview: bool = False) -> dict[str, Any]:
+    row, _ = await _search_product(page, product_code)
+    row_text = await row.inner_text()
+    if "품절" in row_text:
+        return {"success": True, "alreadyProcessed": True, "verified": True}
+    if preview:
+        return {"success": True, "preview": True, "currentStatus": "판매중"}
+
+    checkbox = row.locator('input[name="chkprcode"]')
+    if await checkbox.count() != 1:
+        raise RuntimeError(f"오너클랜 상품 선택 체크박스를 찾지 못했습니다: {product_code}")
+    await checkbox.check()
+    await page.locator('button[onclick*="temp_soldout"]').first.click()
+    await page.wait_for_timeout(2500)
+
+    verified_row, _ = await _search_product(page, product_code)
+    if "품절" not in await verified_row.inner_text():
+        raise RuntimeError(f"오너클랜 상품 품절 저장을 확인하지 못했습니다: {product_code}")
+    return {"success": True, "verified": True}
+
+
+async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False) -> dict[str, Any]:
+    async with async_playwright() as playwright:
+        browser: Browser = await playwright.chromium.launch(headless=config.HEADLESS)
+        context = await browser.new_context()
+        page = await context.new_page()
+        page.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
+        try:
+            await _login(page)
+            if action == "option-soldout":
+                if not option_name:
+                    raise ValueError("옵션 품절에는 옵션명이 필요합니다.")
+                result = await option_soldout(page, product_code, option_name, preview=preview)
+            elif action == "product-soldout":
+                result = await product_soldout(page, product_code, preview=preview)
+            else:
+                raise ValueError(f"지원하지 않는 품절 작업입니다: {action}")
+            return {"site": "오너클랜", "siteCode": "ownerclan", "action": action, "productCode": product_code, **result}
+        finally:
+            await browser.close()

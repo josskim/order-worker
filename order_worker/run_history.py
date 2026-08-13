@@ -12,6 +12,7 @@ from order_worker import config
 class ClaimResult:
     acquired: bool
     existing_status: str | None = None
+    job: dict[str, Any] | None = None
 
 
 def _headers() -> dict[str, str]:
@@ -92,6 +93,7 @@ def claim_job(*, job_id: str, task: str) -> ClaimResult:
     return ClaimResult(
         acquired=bool(payload.get("acquired")),
         existing_status=job.get("status"),
+        job=job,
     )
 
 
