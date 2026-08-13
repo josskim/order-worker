@@ -22,6 +22,7 @@ from order_worker.sites import (
     ownerclan,
     ownerclan_invoice,
     ownerclan_status,
+    product_status,
     sister,
     sister_invoice,
     specialoffer,
@@ -551,15 +552,16 @@ async def run_job_command(task: str) -> int:
             product_code = str(request.get("productCode") or "")
             option_name = request.get("optionName")
             sites = request.get("sites") or []
-            if sites != ["ownerclan"]:
-                raise ValueError(f"Unsupported product-status sites: {sites}")
-            result = await ownerclan_status.run(
+            results = await product_status.run_sites(
                 action=action,
                 product_code=product_code,
                 option_name=str(option_name) if option_name else None,
+                sites=[str(site) for site in sites],
             )
-            details.update({"request": request, "summary": [result]})
-            exit_code = 0 if result.get("success") else 1
+            success_count = sum(1 for result in results if result.get("success"))
+            details.update({"request": request, "summary": results})
+            details["status"] = "succeeded" if success_count == len(results) else ("partial" if success_count else "failed")
+            exit_code = 0 if success_count else 1
         else:
             raise ValueError(f"Unsupported job task: {task}")
 
@@ -618,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     status_parser = subparsers.add_parser("product-status", help="Update a vendor product or option sales status")
-    status_parser.add_argument("--site", choices=["ownerclan"], default="ownerclan")
+    status_parser.add_argument("--site", action="append", choices=sorted(product_status.LABELS), required=True)
     status_parser.add_argument("--action", choices=["option-soldout", "product-soldout"], required=True)
     status_parser.add_argument("--product-code", required=True)
     status_parser.add_argument("--option-name")
@@ -655,17 +657,18 @@ def main() -> int:
         return asyncio.run(run_job_command(args.task))
 
     if args.command == "product-status":
-        result = asyncio.run(
-            ownerclan_status.run(
+        results = asyncio.run(
+            product_status.run_sites(
                 action=args.action,
                 product_code=args.product_code,
                 option_name=args.option_name,
+                sites=args.site,
                 preview=args.preview,
             )
         )
         print("__JSON__")
-        print(json.dumps(result, ensure_ascii=False))
-        return 0 if result.get("success") else 1
+        print(json.dumps(results, ensure_ascii=False))
+        return 0 if all(result.get("success") for result in results) else 1
 
     parser.print_help()
     return 2
