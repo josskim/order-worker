@@ -9,12 +9,6 @@ export ORDER_WORKER_LOCK_FILE="${ORDER_WORKER_LOCK_FILE:-$runtime_dir/order-work
 
 mkdir -p "$ORDER_WORKER_DOWNLOAD_DIR" "$ORDER_WORKER_ARCHIVE_DIR" "$ORDER_WORKER_LOG_DIR" "$(dirname "$ORDER_WORKER_LOCK_FILE")"
 
-if [ "${RAILWAY_GIT_COMMIT_MESSAGE:-}" = "test: specialoffer railway smoke" ] \
-  && [ "${RAILWAY_SERVICE_ID:-}" = "e6ad433e-4b08-40b2-aea1-37c712c40596" ]; then
-  python -m order_worker.main product-status --site specialoffer --action product-restock --product-code G126121
-  exec python -m order_worker.main product-status --site specialoffer --action product-soldout --product-code G126121
-fi
-
 task="${ORDER_WORKER_TASK:-${1:-sites}}"
 
 case "$task" in
