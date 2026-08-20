@@ -41,7 +41,7 @@ async def _search(page: Page, product_code: str) -> str:
     return matches[0]
 
 
-async def _option(page: Page, item_id: str, option_name: str, preview: bool) -> dict[str, Any]:
+async def _option(page: Page, item_id: str, option_name: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     async with page.expect_popup() as popup_info:
         await page.locator(f'input[onclick="item_option({item_id});"]').click()
     popup = await popup_info.value
@@ -61,26 +61,32 @@ async def _option(page: Page, item_id: str, option_name: str, preview: bool) -> 
         raise RuntimeError(f"{SITE}: 옵션명 '{option_name}'을 1건으로 찾지 못해 처리하지 않았습니다. (일치 {len(matches)}건)")
     index, label = matches[0]
     status = statuses.nth(index)
-    if await status.input_value() == "1":
+    wanted = "0" if restock else "1"
+    if await status.input_value() == wanted:
         await popup.close()
         return {"success": True, "alreadyProcessed": True, "matchedOption": label, "verified": True}
     if preview:
         await popup.close()
         return {"success": True, "preview": True, "matchedOption": label}
-    await status.select_option("1")
+    await status.select_option(wanted)
     await popup.locator('input[type=submit]').last.click()
     await page.wait_for_timeout(1200)
     return {"success": True, "matchedOption": label, "verified": True}
 
 
-async def _product(page: Page, item_id: str, preview: bool) -> dict[str, Any]:
+async def _product(page: Page, item_id: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     status = page.locator(f'select[name="status_{item_id}"]')
-    if await status.input_value() == "1":
+    wanted = "0" if restock else "1"
+    if await status.input_value() == wanted:
         return {"success": True, "alreadyProcessed": True, "verified": True}
     if preview:
         return {"success": True, "preview": True}
-    await page.locator(f'input[name="iid[]"][value="{item_id}"]').check()
-    await page.locator("#btn_total_sold").click()
+    if restock:
+        await status.select_option(wanted)
+        await status.dispatch_event("change")
+    else:
+        await page.locator(f'input[name="iid[]"][value="{item_id}"]').check()
+        await page.locator("#btn_total_sold").click()
     await page.wait_for_timeout(1500)
     return {"success": True, "verified": True}
 
@@ -93,7 +99,8 @@ async def run(action: str, product_code: str, option_name: str | None = None, pr
         try:
             await _login(page)
             item_id = await _search(page, product_code)
-            result = await _option(page, item_id, option_name or "", preview) if action == "option-soldout" else await _product(page, item_id, preview)
+            restock = action.endswith("restock")
+            result = await _option(page, item_id, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, item_id, preview, restock)
             return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
         except Exception as exc:
             return failed(SITE, SITE_CODE, action, product_code, exc)

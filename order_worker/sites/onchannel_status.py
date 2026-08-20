@@ -41,7 +41,7 @@ async def _search(page: Page, product_code: str):
     return exact[0]
 
 
-async def _option(page: Page, row, option_name: str, preview: bool) -> dict[str, Any]:
+async def _option(page: Page, row, option_name: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     await row.locator(".btn-op-status").click()
     modal = page.locator(".modal:visible")
     await modal.wait_for()
@@ -57,26 +57,28 @@ async def _option(page: Page, row, option_name: str, preview: bool) -> dict[str,
         raise RuntimeError(f"{SITE}: 옵션명 '{option_name}'을 1건으로 찾지 못해 처리하지 않았습니다. (일치 {len(matches)}건)")
     target, label = matches[0]
     status = target.locator('select[name="saleStatusSelect"]')
-    if await status.input_value() == "3":
+    wanted = "1" if restock else "3"
+    if await status.input_value() == wanted:
         return {"success": True, "alreadyProcessed": True, "matchedOption": label, "verified": True}
     if preview:
         return {"success": True, "preview": True, "matchedOption": label}
     await target.locator('input[name="optionCheckbox"]').check()
-    await status.select_option("3")
+    await status.select_option(wanted)
     await modal.locator("#optionReasonTextarea").fill(".")
     await modal.locator("#selectCompleteButton").click()
     await page.wait_for_timeout(1600)
     return {"success": True, "matchedOption": label, "verified": True}
 
 
-async def _product(page: Page, row, preview: bool) -> dict[str, Any]:
-    if "품절" in await row.inner_text():
+async def _product(page: Page, row, preview: bool, restock: bool = False) -> dict[str, Any]:
+    is_soldout = "품절" in await row.inner_text()
+    if is_soldout != restock:
         return {"success": True, "alreadyProcessed": True, "verified": True}
     if preview:
         return {"success": True, "preview": True}
     await row.locator(".btn-individual-sale-status").click()
     modal = page.locator(".modal:visible")
-    await modal.locator("#saleStatusSelect").select_option("5")
+    await modal.locator("#saleStatusSelect").select_option("1" if restock else "5")
     await modal.locator("#reasonTextarea").fill(".")
     await modal.locator("#submitSaleStatus").click()
     await page.wait_for_timeout(1600)
@@ -91,7 +93,8 @@ async def run(action: str, product_code: str, option_name: str | None = None, pr
         try:
             await _login(page)
             row = await _search(page, product_code)
-            result = await _option(page, row, option_name or "", preview) if action == "option-soldout" else await _product(page, row, preview)
+            restock = action.endswith("restock")
+            result = await _option(page, row, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row, preview, restock)
             return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
         except Exception as exc:
             return failed(SITE, SITE_CODE, action, product_code, exc)

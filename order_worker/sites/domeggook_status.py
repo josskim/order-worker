@@ -35,7 +35,7 @@ async def _search(page: Page, product_code: str) -> str:
     return await cells.first.get_attribute("data-row-key") or "0"
 
 
-async def _option(page: Page, row_key: str, option_name: str, preview: bool) -> dict[str, Any]:
+async def _option(page: Page, row_key: str, option_name: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     await page.locator('.tui-grid-rside-area .tui-grid-body-area').evaluate("e => e.scrollLeft = 800")
     await page.wait_for_timeout(400)
     cell = page.locator(f'td[data-row-key="{row_key}"][data-column-name="useOpt"]')
@@ -57,13 +57,14 @@ async def _option(page: Page, row_key: str, option_name: str, preview: bool) -> 
     index = matches[0]
     qty = popup.locator('input[name="qty[]"]').nth(index)
     status = popup.locator('select[name="hid[]"]').nth(index)
-    if await qty.input_value() == "0" and await status.input_value() == "1":
+    wanted_qty, wanted_status = ("9999", "0") if restock else ("0", "1")
+    if await qty.input_value() == wanted_qty and await status.input_value() == wanted_status:
         return {"success": True, "alreadyProcessed": True, "matchedOption": labels[index], "verified": True}
     if preview:
         return {"success": True, "preview": True, "matchedOption": labels[index]}
     await popup.locator('input[name="optSel[]"]').nth(index).check()
-    await qty.fill("0")
-    await status.select_option("1")
+    await qty.fill(wanted_qty)
+    await status.select_option(wanted_status)
     save = popup.locator('img[onclick*="endOptSet"]')
     if await save.count() == 0:
         raise RuntimeError(f"{SITE}: 옵션 저장 버튼을 찾지 못했습니다.")
@@ -72,14 +73,14 @@ async def _option(page: Page, row_key: str, option_name: str, preview: bool) -> 
     return {"success": True, "matchedOption": labels[index], "verified": True}
 
 
-async def _product(page: Page, row_key: str, preview: bool) -> dict[str, Any]:
+async def _product(page: Page, row_key: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     if preview:
         return {"success": True, "preview": True}
     await page.locator(f'td[data-row-key="{row_key}"][data-column-name="_checked"] input').check()
     controls = page.locator('.pFunctions select, select').filter(has_text="진열상태변경")
     options = await controls.first.locator("option").evaluate_all("es=>es.map(e=>({t:e.textContent.trim(),v:e.value}))")
-    hidden = next(item for item in options if "진열안함" in item["t"])
-    await controls.first.select_option(hidden["v"])
+    wanted = next(item for item in options if ("진열함" in item["t"] if restock else "진열안함" in item["t"]))
+    await controls.first.select_option(wanted["v"])
     await page.get_by_text("수정저장", exact=True).click()
     await page.wait_for_timeout(1200)
     return {"success": True, "verified": True}
@@ -93,7 +94,8 @@ async def run(action: str, product_code: str, option_name: str | None = None, pr
         try:
             await _login(page)
             row_key = await _search(page, product_code)
-            result = await _option(page, row_key, option_name or "", preview) if action == "option-soldout" else await _product(page, row_key, preview)
+            restock = action.endswith("restock")
+            result = await _option(page, row_key, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row_key, preview, restock)
             return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
         except Exception as exc:
             return failed(SITE, SITE_CODE, action, product_code, exc)

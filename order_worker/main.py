@@ -621,7 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser = subparsers.add_parser("product-status", help="Update a vendor product or option sales status")
     status_parser.add_argument("--site", action="append", choices=sorted(product_status.LABELS), required=True)
-    status_parser.add_argument("--action", choices=["option-soldout", "product-soldout"], required=True)
+    status_parser.add_argument("--action", choices=["option-soldout", "product-soldout", "option-restock", "product-restock"], required=True)
     status_parser.add_argument("--product-code", required=True)
     status_parser.add_argument("--option-name")
     status_parser.add_argument("--preview", action="store_true")

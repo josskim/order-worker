@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from playwright.async_api import Page, async_playwright
@@ -41,7 +42,7 @@ async def _search(page: Page, product_code: str):
     return matches[0]
 
 
-async def _option(page: Page, row, option_name: str, preview: bool) -> dict[str, Any]:
+async def _option(page: Page, row, option_name: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     detail = row.locator('a[href*="seller_goods_form"]')
     if await detail.count() != 1:
         raise RuntimeError(f"{SITE}: 상품 수정 링크를 찾지 못했습니다.")
@@ -67,13 +68,14 @@ async def _option(page: Page, row, option_name: str, preview: bool) -> dict[str,
     target, label = matches[0]
     stock = target.locator('input[name="opt_stock_qty[]"]')
     use = target.locator('select[name="opt_use[]"]')
-    if (await stock.input_value()).replace(",", "") == "0" and await use.input_value() == "0":
+    wanted_qty, wanted_use = ("9999", "1") if restock else ("0", "0")
+    if (await stock.input_value()).replace(",", "") == wanted_qty and await use.input_value() == wanted_use:
         return {"success": True, "alreadyProcessed": True, "matchedOption": label, "verified": True}
     if preview:
         return {"success": True, "preview": True, "matchedOption": label}
     if await stock.count():
-        await stock.fill("0")
-    await use.select_option("0")
+        await stock.fill(wanted_qty)
+    await use.select_option(wanted_use)
     option_checkbox = target.locator('input[name="opt_chk[]"]')
     if await option_checkbox.count():
         await option_checkbox.check()
@@ -88,20 +90,39 @@ async def _option(page: Page, row, option_name: str, preview: bool) -> dict[str,
         "success": True,
         "matchedOption": label,
         "verified": True,
-        "message": "옵션 품절 수정요청 제출 완료",
+        "message": "옵션 상태 수정요청 제출 완료",
     }
 
 
-async def _product(page: Page, row, preview: bool) -> dict[str, Any]:
+async def _product(page: Page, row, preview: bool, restock: bool = False) -> dict[str, Any]:
     if preview:
         return {"success": True, "preview": True}
     await row.locator('input[type=checkbox]').check()
-    await page.locator('button[onclick*="GoodsChange.pop"][onclick*="\'1\'"]').first.click()
-    modal = page.locator('.modal:visible, [class*=popup]:visible').last
-    textarea = modal.locator("textarea").last
+    button_label = "선택 상품 일괄 재입고" if restock else "선택 상품 일괄 품절"
+    action_button = page.locator('button[name="act_button"]:visible').filter(has_text="일괄 재입고" if restock else "일괄 품절")
+    if await action_button.count() == 0:
+        opposite = "선택 상품 일괄 품절" if restock else "선택 상품 일괄 재입고"
+        if await page.locator('button[name="act_button"]:visible').filter(has_text="일괄 품절" if restock else "일괄 재입고").count():
+            return {"success": True, "alreadyProcessed": True, "verified": True}
+        raise RuntimeError(f"{SITE}: {button_label} 버튼을 찾지 못했습니다.")
+    async with page.expect_popup() as popup_info:
+        await action_button.first.click()
+    popup = await popup_info.value
+    await popup.wait_for_load_state("domcontentloaded")
+    status = popup.locator('select[name="status"]')
+    options = await status.locator("option").evaluate_all("es=>es.map(e=>({t:e.textContent.trim(),v:e.value}))")
+    wanted_text = "재입고" if restock else "품절"
+    wanted = next((item for item in options if item["t"] == wanted_text), None)
+    if wanted:
+        await status.select_option(wanted["v"])
+    textarea = popup.locator('textarea[name="msg[all][after]"]')
     if await textarea.count():
         await textarea.fill(".")
-    await modal.locator('input[type=submit], button[type=submit]').last.click()
+    submit = popup.locator('input[type=submit][value="등록"]')
+    if await submit.count() == 0:
+        raise RuntimeError(f"{SITE}: 상품 상태 변경 등록 버튼을 찾지 못했습니다.")
+    await submit.click()
+    await page.wait_for_timeout(1200)
     return {"success": True, "verified": True}
 
 
@@ -113,7 +134,8 @@ async def run(action: str, product_code: str, option_name: str | None = None, pr
         try:
             await _login(page)
             row = await _search(page, product_code)
-            result = await _option(page, row, option_name or "", preview) if action == "option-soldout" else await _product(page, row, preview)
+            restock = action.endswith("restock")
+            result = await _option(page, row, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row, preview, restock)
             return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
         except Exception as exc:
             return failed(SITE, SITE_CODE, action, product_code, exc)
