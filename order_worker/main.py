@@ -11,7 +11,7 @@ import requests
 from order_worker import config
 from order_worker.lock import WorkerLock
 from order_worker.notifier import build_invoice_upload_summary_message, build_summary_message, send_telegram_message
-from order_worker.run_history import claim_job, claim_run, complete_job, complete_run, is_job_cancelled
+from order_worker.run_history import claim_job, claim_run, complete_job, complete_run, is_job_cancelled, update_job_progress
 from order_worker.sites import (
     domeggook,
     domeggook_invoice,
@@ -552,11 +552,21 @@ async def run_job_command(task: str) -> int:
             product_code = str(request.get("productCode") or "")
             option_name = request.get("optionName")
             sites = request.get("sites") or []
+            def report_product_status_progress(current_site: str | None, summary: list[dict]) -> None:
+                try:
+                    update_job_progress(
+                        job_id=job_id,
+                        task=task,
+                        result={"request": request, "summary": summary, "currentSite": current_site},
+                    )
+                except Exception as progress_error:
+                    print(f"PROGRESS: [job] progress update failed: {progress_error}")
             results = await product_status.run_sites(
                 action=action,
                 product_code=product_code,
                 option_name=str(option_name) if option_name else None,
                 sites=[str(site) for site in sites],
+                on_progress=report_product_status_progress,
             )
             success_count = sum(1 for result in results if result.get("success"))
             details.update({"request": request, "summary": results})

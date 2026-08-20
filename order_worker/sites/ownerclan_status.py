@@ -179,11 +179,33 @@ async def product_status(page: Page, product_code: str, account, preview: bool =
     if await checkbox.count() != 1:
         raise RuntimeError(f"오너클랜 상품 선택 체크박스를 찾지 못했습니다: {product_code}")
     await checkbox.check()
-    button = page.locator('[onclick*="temp_sale"]:visible, input[value*="판매재개"]:visible').first if restock else page.locator('[onclick*="temp_soldout"]:visible').first
-    if await button.count() != 1:
-        raise RuntimeError(f"오너클랜 상품 {'재입고' if restock else '품절'} 버튼을 찾지 못했습니다: {product_code}")
-    await button.click()
-    await page.wait_for_timeout(2500)
+    if restock:
+        status_selects = page.locator("select:visible")
+        status_select = None
+        for index in range(await status_selects.count()):
+            candidate = status_selects.nth(index)
+            labels = await candidate.locator("option").all_text_contents()
+            normalized = {label.strip() for label in labels}
+            if {"판매중", "품절"}.issubset(normalized):
+                status_select = candidate
+        if status_select is not None:
+            await status_select.select_option(label="판매중")
+            await page.wait_for_timeout(2500)
+        else:
+            menu_button = page.locator("button:visible").filter(has_text="판매 상태 변경").first
+            if await menu_button.count() != 1:
+                raise RuntimeError(f"오너클랜 상품 재입고 판매상태 변경 메뉴를 찾지 못했습니다: {product_code}")
+            await menu_button.click()
+            sale_item = page.get_by_text("판매중", exact=True).last
+            await sale_item.wait_for(state="visible", timeout=5000)
+            await sale_item.click()
+            await page.wait_for_timeout(2500)
+    else:
+        button = page.locator('[onclick*="temp_soldout"]:visible').first
+        if await button.count() != 1:
+            raise RuntimeError(f"오너클랜 상품 품절 버튼을 찾지 못했습니다: {product_code}")
+        await button.click()
+        await page.wait_for_timeout(2500)
 
     verified_row, _ = await _search_product(page, product_code, account)
     if ("품절" in await verified_row.inner_text()) == restock:

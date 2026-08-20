@@ -115,6 +115,29 @@ def is_job_cancelled(*, job_id: str, task: str) -> bool:
     return bool(payload.get("cancelled"))
 
 
+def update_job_progress(
+    *,
+    job_id: str,
+    task: str,
+    result: dict[str, Any],
+) -> None:
+    response = requests.post(
+        config.INTRANET_JOB_API_URL,
+        headers=_headers(),
+        json={
+            "action": "progress",
+            "job_id": job_id,
+            "task": task,
+            "result": result,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not payload.get("success"):
+        raise RuntimeError(payload.get("error") or "Job progress update failed")
+
+
 def complete_job(
     *,
     job_id: str,
