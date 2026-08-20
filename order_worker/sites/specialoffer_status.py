@@ -96,20 +96,23 @@ async def _option(page: Page, row, product_code: str, option_name: str, preview:
     if await stock.count():
         await stock.fill(wanted_qty)
     await use.select_option(wanted_use)
-    option_checkbox = target.locator('input[name="opt_chk[]"]')
-    if await option_checkbox.count():
-        await option_checkbox.check()
     await editor.locator("#modify_status").select_option("9")
     await editor.locator('textarea[name="modify_msg_after"]').fill(".")
-    await editor.evaluate("GoodsForm.save()")
-    await _click_visible_confirm(editor)
-    try:
-        await editor.wait_for_url(lambda url: "seller_goods_form" not in url, timeout=30000)
-    except Exception:
-        if not editor.is_closed():
-            raise RuntimeError(f"{SITE}: 옵션 상태 변경 저장 완료 화면을 확인하지 못했습니다.")
-    submitted = editor.is_closed() or "seller_goods_form" not in editor.url
-
+    save_button = editor.get_by_role("button", name="저장", exact=True)
+    if await save_button.count() != 1:
+        raise RuntimeError(f"{SITE}: 상품 수정 저장 버튼을 찾지 못했습니다.")
+    await save_button.click()
+    async with editor.expect_response(
+        lambda response: "seller_goods_form_update.php" in response.url,
+        timeout=30000,
+    ) as response_info:
+        await _click_visible_confirm(editor)
+    update_response = await response_info.value
+    if update_response.status >= 400:
+        raise RuntimeError(f"{SITE}: 옵션 저장 요청이 HTTP {update_response.status}로 실패했습니다.")
+    if not editor.is_closed():
+        await editor.wait_for_load_state("domcontentloaded")
+    await page.wait_for_timeout(1500)
     verified_row = await _search(page, product_code)
     verify_detail = verified_row.locator('a[href*="seller_goods_form"]')
     async with page.expect_popup() as verify_popup:
@@ -127,8 +130,8 @@ async def _option(page: Page, row, product_code: str, option_name: str, preview:
                 enabled = await candidate.locator('select[name="opt_use[]"]').input_value()
                 verified = qty == wanted_qty and enabled == wanted_use
                 break
-        if not verified and not submitted:
-            raise RuntimeError(f"{SITE}: 옵션 품절 수정요청 제출을 확인하지 못했습니다: {label}")
+        if not verified:
+            raise RuntimeError(f"{SITE}: 저장 후 옵션 상태가 즉시 반영되지 않았습니다: {label}")
     finally:
         if not verify_editor.is_closed():
             await verify_editor.close()
@@ -136,7 +139,7 @@ async def _option(page: Page, row, product_code: str, option_name: str, preview:
         "success": True,
         "matchedOption": label,
         "verified": True,
-        "message": "옵션 품절 수정요청 제출 완료(스페셜오퍼 승인 대기)",
+        "message": f"옵션 {'재입고' if restock else '품절'} 즉시 반영 완료",
     }
 
 
