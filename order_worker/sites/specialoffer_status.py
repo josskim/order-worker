@@ -155,7 +155,7 @@ async def _product(page: Page, row, product_code: str, preview: bool, restock: b
             return {"success": True, "alreadyProcessed": True, "verified": True}
         raise RuntimeError(f"{SITE}: {button_label} 버튼을 찾지 못했습니다.")
     async with page.expect_popup() as popup_info:
-        await action_button.first.click()
+        await action_button.first.click(no_wait_after=True)
     popup = await popup_info.value
     popup.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
     await popup.wait_for_load_state("domcontentloaded")
@@ -171,14 +171,18 @@ async def _product(page: Page, row, product_code: str, preview: bool, restock: b
     submit = popup.locator('input[type=submit][value="등록"]')
     if await submit.count() == 0:
         raise RuntimeError(f"{SITE}: 상품 상태 변경 등록 버튼을 찾지 못했습니다.")
-    await submit.click()
+    await submit.click(no_wait_after=True)
     await _click_visible_confirm(popup, timeout=5000)
     await page.wait_for_timeout(1800)
     verified_row = await _search(page, product_code)
     is_soldout = "품절" in await verified_row.inner_text()
     if is_soldout == restock:
         raise RuntimeError(f"{SITE}: 저장 후 상품 {'재입고' if restock else '품절'} 상태가 반영되지 않았습니다.")
-    return {"success": True, "verified": True}
+    return {
+        "success": True,
+        "verified": True,
+        "message": f"상품 {'재입고' if restock else '품절'} 처리 완료",
+    }
 
 
 async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False) -> dict[str, Any]:
