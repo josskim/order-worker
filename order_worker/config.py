@@ -69,6 +69,14 @@ SISTER_ORDER_EXPORT_API_URL = os.getenv(
     "https://prahashop.co.kr/api/seller/orders/export",
 )
 SISTER_ORDER_EXPORT_TOKEN = os.getenv("SISTER_ORDER_EXPORT_TOKEN", "")
+SISTER_PRODUCT_STATUS_API_URL = os.getenv(
+    "SISTER_PRODUCT_STATUS_API_URL",
+    "https://www.prahashop.co.kr/api/internal/product-status",
+)
+SISTER_PRODUCT_STATUS_TOKEN = os.getenv(
+    "SISTER_PRODUCT_STATUS_TOKEN",
+    SISTER_ORDER_EXPORT_TOKEN,
+)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")

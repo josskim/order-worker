@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import partial
 from typing import Any, Callable
 
-from order_worker.sites import domeggook_status, domesin_status, ownerclan_status, onchannel_status, specialoffer_status
+from order_worker.sites import domeggook_status, domesin_status, ownerclan_status, onchannel_status, sister_status, specialoffer_status
 from order_worker.sites.status_utils import failed
 
 RUNNERS = {
@@ -15,6 +15,7 @@ RUNNERS = {
     "specialoffer": specialoffer_status.run,
     "domeggook": domeggook_status.run,
     "Fdomeggook": partial(domeggook_status.run, account_code="Fdomeggook"),
+    "sister": sister_status.run,
 }
 
 LABELS = {
@@ -26,6 +27,7 @@ LABELS = {
     "Fdomeggook": "F도매꾹",
     "specialoffer": "스페셜오퍼",
     "domesin": "도매의신",
+    "sister": "시스터",
 }
 
 

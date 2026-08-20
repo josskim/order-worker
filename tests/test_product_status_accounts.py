@@ -9,6 +9,7 @@ def test_status_runners_include_secondary_vendor_accounts():
         "Fonch3": "F온채널",
         "domeggook": "도매꾹",
         "Fdomeggook": "F도매꾹",
+        "sister": "시스터",
     }
 
     for code, label in expected.items():
