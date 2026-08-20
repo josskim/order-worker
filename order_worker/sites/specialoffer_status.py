@@ -17,11 +17,15 @@ MANAGEMENT_URL = "https://specialoffer.kr/mypage/page.php?code=seller_goods_chan
 
 
 async def _login(page: Page) -> None:
-    await page.goto(LOGIN_URL)
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
     await page.fill("#login_id", USER_ID)
     await page.fill("#login_pw", PASSWORD)
-    await page.click("#login_fld > dl > dd:nth-child(5) > button")
-    await page.wait_for_url(lambda url: "/bbs/login.php" not in url, timeout=30000)
+    await page.click("#login_fld > dl > dd:nth-child(5) > button", no_wait_after=True)
+    await page.wait_for_url(
+        lambda url: "/bbs/login.php" not in url,
+        wait_until="domcontentloaded",
+        timeout=30000,
+    )
 
 
 async def _accept_dialog(dialog) -> None:
@@ -48,8 +52,8 @@ async def _search(page: Page, product_code: str):
     await page.locator('input[type=button][onclick*="search_date"]').last.click()
     await page.locator('select[name="sfl"]').select_option("gname")
     await page.locator('input[name="stx"]').fill(product_code)
-    await page.locator('input[type=submit]').click()
-    await page.wait_for_load_state("domcontentloaded")
+    async with page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+        await page.locator('input[type=submit]').click(no_wait_after=True)
     rows = page.locator("tbody tr").filter(has_text=product_code)
     matches = []
     for index in range(await rows.count()):
@@ -190,13 +194,16 @@ async def run(action: str, product_code: str, option_name: str | None = None, pr
         browser = await playwright.chromium.launch(headless=config.HEADLESS)
         page = await browser.new_page()
         page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
+        stage = "로그인"
         try:
             await _login(page)
+            stage = "상품 검색"
             row = await _search(page, product_code)
             restock = action.endswith("restock")
+            stage = "옵션 상태 변경" if action.startswith("option-") else "상품 상태 변경"
             result = await _option(page, row, product_code, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row, product_code, preview, restock)
             return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
         except Exception as exc:
-            return failed(SITE, SITE_CODE, action, product_code, exc)
+            return failed(SITE, SITE_CODE, action, product_code, f"{SITE} {stage} 단계 실패: {exc}")
         finally:
             await browser.close()
