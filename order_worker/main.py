@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -509,6 +510,14 @@ async def run_job_command(task: str) -> int:
         return 0
 
     claim = claim_job(job_id=job_id, task=task)
+    if task == "product-status" and not claim.acquired and claim.existing_status == "held":
+        print(f"PROGRESS: [job] {job_id} worker ready; waiting for Sinsang completion")
+        deadline = time.monotonic() + (15 * 60)
+        while time.monotonic() < deadline:
+            await asyncio.sleep(2)
+            claim = claim_job(job_id=job_id, task=task)
+            if claim.acquired or claim.existing_status != "held":
+                break
     if not claim.acquired:
         print(f"PROGRESS: [job] {job_id} already claimed, status={claim.existing_status or 'unknown'}")
         return 0
