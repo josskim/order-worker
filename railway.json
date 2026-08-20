@@ -2,7 +2,14 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile"
+    "dockerfilePath": "Dockerfile",
+    "watchPatterns": [
+      "/order_worker/**",
+      "/scripts/railway-entrypoint.sh",
+      "/pyproject.toml",
+      "/Dockerfile",
+      "/railway.json"
+    ]
   },
   "deploy": {
     "restartPolicyType": "NEVER"
