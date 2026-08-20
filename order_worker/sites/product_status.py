@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from order_worker.sites import domeggook_status, domesin_status, ownerclan_status, onchannel_status, specialoffer_status
@@ -7,16 +8,22 @@ from order_worker.sites.status_utils import failed
 
 RUNNERS = {
     "ownerclan": ownerclan_status.run,
+    "Fownerclan": partial(ownerclan_status.run, account_code="Fownerclan"),
     "onchannel": onchannel_status.run,
+    "Fonch3": partial(onchannel_status.run, account_code="Fonch3"),
     "domesin": domesin_status.run,
     "specialoffer": specialoffer_status.run,
     "domeggook": domeggook_status.run,
+    "Fdomeggook": partial(domeggook_status.run, account_code="Fdomeggook"),
 }
 
 LABELS = {
     "ownerclan": "오너클랜",
+    "Fownerclan": "F오너클랜",
     "onchannel": "온채널",
+    "Fonch3": "F온채널",
     "domeggook": "도매꾹",
+    "Fdomeggook": "F도매꾹",
     "specialoffer": "스페셜오퍼",
     "domesin": "도매의신",
 }

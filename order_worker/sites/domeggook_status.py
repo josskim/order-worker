@@ -7,7 +7,7 @@ from playwright.async_api import Page, async_playwright
 
 from order_worker import config
 from order_worker.sites.domeggook import ACCOUNTS
-from order_worker.sites.status_utils import failed, normalize, option_matches
+from order_worker.sites.status_utils import ProductNotFound, failed, normalize, option_matches, product_not_found
 
 SITE = "도매꾹"
 SITE_CODE = "domeggook"
@@ -15,8 +15,8 @@ LOGIN_URL = "https://domeggook.com/ssl/member/mem_loginForm.php"
 MANAGEMENT_URL = "https://www.domeggook.com/sc/item/lstAll"
 
 
-async def _login(page: Page) -> None:
-    _, user_id, password, _ = ACCOUNTS[0]
+async def _login(page: Page, account) -> None:
+    _, user_id, password, _ = account
     await page.goto(LOGIN_URL)
     await page.fill("#idInput", user_id)
     await page.fill("#pwInput", password)
@@ -30,6 +30,8 @@ async def _search(page: Page, product_code: str) -> str:
     await page.locator('input[type="submit"]').click()
     await page.wait_for_timeout(1800)
     cells = page.locator('td[data-column-name="code"]').filter(has_text=product_code)
+    if await cells.count() == 0:
+        raise ProductNotFound(product_code)
     if await cells.count() != 1 or normalize(await cells.first.inner_text()) != normalize(product_code):
         raise RuntimeError(f"{SITE}: 상품코드 {product_code} 검색 결과를 1건으로 확인하지 못해 처리하지 않았습니다.")
     return await cells.first.get_attribute("data-row-key") or "0"
@@ -86,18 +88,24 @@ async def _product(page: Page, row_key: str, preview: bool, restock: bool = Fals
     return {"success": True, "verified": True}
 
 
-async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False) -> dict[str, Any]:
+async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False, account_code: str = "domeggook") -> dict[str, Any]:
+    account = next((item for item in ACCOUNTS if item[0] == account_code), None)
+    if account is None:
+        raise ValueError(f"지원하지 않는 도매꾹 계정입니다: {account_code}")
+    site_code, _, _, site = account
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=config.HEADLESS)
         page = await browser.new_page(viewport={"width": 1600, "height": 900})
         page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
         try:
-            await _login(page)
+            await _login(page, account)
             row_key = await _search(page, product_code)
             restock = action.endswith("restock")
             result = await _option(page, row_key, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row_key, preview, restock)
-            return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
+            return {"site": site, "siteCode": site_code, "action": action, "productCode": product_code, **result}
+        except ProductNotFound:
+            return product_not_found(site, site_code, action, product_code)
         except Exception as exc:
-            return failed(SITE, SITE_CODE, action, product_code, exc)
+            return failed(site, site_code, action, product_code, exc)
         finally:
             await browser.close()

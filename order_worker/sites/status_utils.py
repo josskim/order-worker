@@ -4,6 +4,10 @@ import re
 import unicodedata
 
 
+class ProductNotFound(RuntimeError):
+    """The target product is not registered in this vendor account."""
+
+
 def normalize(value: str) -> str:
     return unicodedata.normalize("NFKC", value or "").strip().casefold()
 
@@ -30,4 +34,16 @@ def failed(site: str, site_code: str, action: str, product_code: str, error: Exc
         "productCode": product_code,
         "success": False,
         "error": str(error),
+    }
+
+
+def product_not_found(site: str, site_code: str, action: str, product_code: str) -> dict:
+    return {
+        "site": site,
+        "siteCode": site_code,
+        "action": action,
+        "productCode": product_code,
+        "success": True,
+        "notFound": True,
+        "message": "상품없음",
     }

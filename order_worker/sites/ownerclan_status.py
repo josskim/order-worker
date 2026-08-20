@@ -9,6 +9,7 @@ from playwright.async_api import Browser, Page, async_playwright
 
 from order_worker import config
 from order_worker.sites.ownerclan import ACCOUNTS
+from order_worker.sites.status_utils import ProductNotFound, failed, product_not_found
 
 
 MANAGEMENT_URL = "https://ownerclan.com/vender/product_myprd.php"
@@ -37,8 +38,8 @@ async def _accept_dialog(dialog) -> None:
     await dialog.accept()
 
 
-async def _login(page: Page) -> None:
-    _, user_id, password, label = ACCOUNTS[0]
+async def _login(page: Page, account) -> None:
+    _, user_id, password, label = account
     print(f"PROGRESS: [{label}] 로그인 중...")
     await page.goto(LOGIN_URL, wait_until="domcontentloaded")
     await page.fill('input[name="id"]', user_id)
@@ -47,7 +48,7 @@ async def _login(page: Page) -> None:
     await page.wait_for_load_state("networkidle")
 
 
-async def _search_product(page: Page, product_code: str):
+async def _search_product(page: Page, product_code: str, account):
     for attempt in range(2):
         await page.goto(MANAGEMENT_URL, wait_until="networkidle")
         search_input = page.locator('input[name="search"]:visible').first
@@ -55,7 +56,7 @@ async def _search_product(page: Page, product_code: str):
             break
         if attempt == 0:
             print("PROGRESS: [오너클랜] 로그인 세션 재확인...")
-            await _login(page)
+            await _login(page, account)
     else:
         raise RuntimeError(f"오너클랜 상품관리 화면에 접근하지 못했습니다: {page.url}")
 
@@ -65,6 +66,8 @@ async def _search_product(page: Page, product_code: str):
 
     edit_links = page.locator('a[href*="GoPrdinfo"]')
     count = await edit_links.count()
+    if count == 0:
+        raise ProductNotFound(product_code)
     if count != 1:
         raise RuntimeError(f"오너클랜 상품 검색 결과가 1건이 아닙니다: {product_code} ({count}건)")
     row = edit_links.first.locator("xpath=ancestor::tr[1]")
@@ -113,8 +116,8 @@ async def _find_option_row(option_page: Page, option_name: str) -> tuple[int, li
     return matches[0]
 
 
-async def _verify_option_status(page: Page, product_code: str, option_name: str, wanted: str) -> list[str]:
-    _, edit_link = await _search_product(page, product_code)
+async def _verify_option_status(page: Page, product_code: str, option_name: str, wanted: str, account) -> list[str]:
+    _, edit_link = await _search_product(page, product_code, account)
     editor = await _open_editor(page, edit_link)
     try:
         option_page = await _open_option_editor(editor)
@@ -131,8 +134,8 @@ async def _verify_option_status(page: Page, product_code: str, option_name: str,
             await editor.close()
 
 
-async def option_status(page: Page, product_code: str, option_name: str, preview: bool = False, restock: bool = False) -> dict[str, Any]:
-    _, edit_link = await _search_product(page, product_code)
+async def option_status(page: Page, product_code: str, option_name: str, account, preview: bool = False, restock: bool = False) -> dict[str, Any]:
+    _, edit_link = await _search_product(page, product_code, account)
     editor = await _open_editor(page, edit_link)
     try:
         option_page = await _open_option_editor(editor)
@@ -159,12 +162,12 @@ async def option_status(page: Page, product_code: str, option_name: str, preview
         if not editor.is_closed():
             await editor.close()
 
-    verified_values = await _verify_option_status(page, product_code, option_name, wanted)
+    verified_values = await _verify_option_status(page, product_code, option_name, wanted, account)
     return {"success": True, "matchedOption": "/".join(verified_values), "verified": True}
 
 
-async def product_status(page: Page, product_code: str, preview: bool = False, restock: bool = False) -> dict[str, Any]:
-    row, _ = await _search_product(page, product_code)
+async def product_status(page: Page, product_code: str, account, preview: bool = False, restock: bool = False) -> dict[str, Any]:
+    row, _ = await _search_product(page, product_code, account)
     row_text = await row.inner_text()
     is_soldout = "품절" in row_text
     if is_soldout != restock:
@@ -182,28 +185,36 @@ async def product_status(page: Page, product_code: str, preview: bool = False, r
     await button.click()
     await page.wait_for_timeout(2500)
 
-    verified_row, _ = await _search_product(page, product_code)
+    verified_row, _ = await _search_product(page, product_code, account)
     if ("품절" in await verified_row.inner_text()) == restock:
         raise RuntimeError(f"오너클랜 상품 상태 저장을 확인하지 못했습니다: {product_code}")
     return {"success": True, "verified": True}
 
 
-async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False) -> dict[str, Any]:
+async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False, account_code: str = "ownerclan") -> dict[str, Any]:
+    account = next((item for item in ACCOUNTS if item[0] == account_code), None)
+    if account is None:
+        raise ValueError(f"지원하지 않는 오너클랜 계정입니다: {account_code}")
+    site_code, _, _, site = account
     async with async_playwright() as playwright:
         browser: Browser = await playwright.chromium.launch(headless=config.HEADLESS)
         context = await browser.new_context()
         page = await context.new_page()
         page.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
         try:
-            await _login(page)
+            await _login(page, account)
             if action.startswith("option-"):
                 if not option_name:
                     raise ValueError("옵션 품절에는 옵션명이 필요합니다.")
-                result = await option_status(page, product_code, option_name, preview=preview, restock=action.endswith("restock"))
+                result = await option_status(page, product_code, option_name, account, preview=preview, restock=action.endswith("restock"))
             elif action.startswith("product-"):
-                result = await product_status(page, product_code, preview=preview, restock=action.endswith("restock"))
+                result = await product_status(page, product_code, account, preview=preview, restock=action.endswith("restock"))
             else:
                 raise ValueError(f"지원하지 않는 품절 작업입니다: {action}")
-            return {"site": "오너클랜", "siteCode": "ownerclan", "action": action, "productCode": product_code, **result}
+            return {"site": site, "siteCode": site_code, "action": action, "productCode": product_code, **result}
+        except ProductNotFound:
+            return product_not_found(site, site_code, action, product_code)
+        except Exception as exc:
+            return failed(site, site_code, action, product_code, exc)
         finally:
             await browser.close()

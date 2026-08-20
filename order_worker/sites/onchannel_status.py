@@ -7,7 +7,7 @@ from playwright.async_api import Page, async_playwright
 
 from order_worker import config
 from order_worker.sites.onchannel import ACCOUNTS
-from order_worker.sites.status_utils import failed, normalize, option_matches
+from order_worker.sites.status_utils import ProductNotFound, failed, normalize, option_matches, product_not_found
 
 SITE = "온채널"
 SITE_CODE = "onchannel"
@@ -15,8 +15,8 @@ LOGIN_URL = "https://www.onch3.co.kr/login/login_web.php"
 MANAGEMENT_URL = "https://www.onch3.co.kr/products_management.php"
 
 
-async def _login(page: Page) -> None:
-    _, user_id, password, _ = ACCOUNTS[0]
+async def _login(page: Page, account) -> None:
+    _, user_id, password, _ = account
     await page.goto(LOGIN_URL, wait_until="domcontentloaded")
     await page.fill('input[name="username"]', user_id)
     await page.fill('input[name="password"]', password)
@@ -36,6 +36,8 @@ async def _search(page: Page, product_code: str):
         row = rows.nth(index)
         if normalize(product_code) in normalize(await row.inner_text()):
             exact.append(row)
+    if len(exact) == 0:
+        raise ProductNotFound(product_code)
     if len(exact) != 1:
         raise RuntimeError(f"{SITE}: 상품코드 {product_code} 검색 결과가 {len(exact)}건이라 처리하지 않았습니다.")
     return exact[0]
@@ -85,18 +87,24 @@ async def _product(page: Page, row, preview: bool, restock: bool = False) -> dic
     return {"success": True, "verified": True}
 
 
-async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False) -> dict[str, Any]:
+async def run(action: str, product_code: str, option_name: str | None = None, preview: bool = False, account_code: str = "onch3") -> dict[str, Any]:
+    account = next((item for item in ACCOUNTS if item[0] == account_code), None)
+    if account is None:
+        raise ValueError(f"지원하지 않는 온채널 계정입니다: {account_code}")
+    site_code, _, _, site = account
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=config.HEADLESS)
         page = await browser.new_page()
         page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
         try:
-            await _login(page)
+            await _login(page, account)
             row = await _search(page, product_code)
             restock = action.endswith("restock")
             result = await _option(page, row, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row, preview, restock)
-            return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
+            return {"site": site, "siteCode": site_code, "action": action, "productCode": product_code, **result}
+        except ProductNotFound:
+            return product_not_found(site, site_code, action, product_code)
         except Exception as exc:
-            return failed(SITE, SITE_CODE, action, product_code, exc)
+            return failed(site, site_code, action, product_code, exc)
         finally:
             await browser.close()

@@ -24,6 +24,25 @@ async def _login(page: Page) -> None:
     await page.wait_for_url(lambda url: "/bbs/login.php" not in url, timeout=30000)
 
 
+async def _accept_dialog(dialog) -> None:
+    await dialog.accept()
+
+
+async def _click_visible_confirm(page: Page, timeout: int = 10000) -> bool:
+    confirm = page.locator(
+        '.swal2-confirm:visible, '
+        '.notiflix-confirm:visible button:has-text("확인"), '
+        '.nx-confirm:visible button:has-text("확인"), '
+        '[role="dialog"]:visible button:has-text("확인")'
+    ).last
+    try:
+        await confirm.wait_for(state="visible", timeout=timeout)
+        await confirm.click(force=True)
+        return True
+    except Exception:
+        return False
+
+
 async def _search(page: Page, product_code: str):
     await page.goto(MANAGEMENT_URL, wait_until="domcontentloaded")
     await page.locator('input[type=button][onclick*="search_date"]').last.click()
@@ -42,13 +61,14 @@ async def _search(page: Page, product_code: str):
     return matches[0]
 
 
-async def _option(page: Page, row, option_name: str, preview: bool, restock: bool = False) -> dict[str, Any]:
+async def _option(page: Page, row, product_code: str, option_name: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     detail = row.locator('a[href*="seller_goods_form"]')
     if await detail.count() != 1:
         raise RuntimeError(f"{SITE}: 상품 수정 링크를 찾지 못했습니다.")
     async with page.expect_popup() as popup_info:
         await detail.click()
     editor = await popup_info.value
+    editor.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
     await editor.wait_for_load_state("domcontentloaded")
     await editor.wait_for_function(
         "() => window.oEditors && window.oEditors.getById && window.oEditors.getById.memo "
@@ -82,19 +102,45 @@ async def _option(page: Page, row, option_name: str, preview: bool, restock: boo
     await editor.locator("#modify_status").select_option("9")
     await editor.locator('textarea[name="modify_msg_after"]').fill(".")
     await editor.evaluate("GoodsForm.save()")
-    confirm = editor.locator('.swal2-confirm, .notiflix-confirm-button-ok, .nx-confirm-button-ok, button').filter(has_text="확인")
-    if await confirm.count():
-        await confirm.last.click()
-    await editor.wait_for_url(lambda url: "seller_goods_form" not in url, timeout=30000)
+    await _click_visible_confirm(editor)
+    try:
+        await editor.wait_for_url(lambda url: "seller_goods_form" not in url, timeout=30000)
+    except Exception:
+        if not editor.is_closed():
+            raise RuntimeError(f"{SITE}: 옵션 상태 변경 저장 완료 화면을 확인하지 못했습니다.")
+    submitted = editor.is_closed() or "seller_goods_form" not in editor.url
+
+    verified_row = await _search(page, product_code)
+    verify_detail = verified_row.locator('a[href*="seller_goods_form"]')
+    async with page.expect_popup() as verify_popup:
+        await verify_detail.click()
+    verify_editor = await verify_popup.value
+    try:
+        await verify_editor.wait_for_load_state("domcontentloaded")
+        verify_rows = verify_editor.locator("#sit_option_frm tbody tr")
+        verified = False
+        for index in range(await verify_rows.count()):
+            candidate = verify_rows.nth(index)
+            candidate_label = (await candidate.inner_text()).splitlines()[0].strip().replace(" > ", "/")
+            if option_matches(option_name, candidate_label):
+                qty = (await candidate.locator('input[name="opt_stock_qty[]"]').input_value()).replace(",", "")
+                enabled = await candidate.locator('select[name="opt_use[]"]').input_value()
+                verified = qty == wanted_qty and enabled == wanted_use
+                break
+        if not verified and not submitted:
+            raise RuntimeError(f"{SITE}: 옵션 품절 수정요청 제출을 확인하지 못했습니다: {label}")
+    finally:
+        if not verify_editor.is_closed():
+            await verify_editor.close()
     return {
         "success": True,
         "matchedOption": label,
         "verified": True,
-        "message": "옵션 상태 수정요청 제출 완료",
+        "message": "옵션 품절 수정요청 제출 완료(스페셜오퍼 승인 대기)",
     }
 
 
-async def _product(page: Page, row, preview: bool, restock: bool = False) -> dict[str, Any]:
+async def _product(page: Page, row, product_code: str, preview: bool, restock: bool = False) -> dict[str, Any]:
     if preview:
         return {"success": True, "preview": True}
     await row.locator('input[type=checkbox]').check()
@@ -108,6 +154,7 @@ async def _product(page: Page, row, preview: bool, restock: bool = False) -> dic
     async with page.expect_popup() as popup_info:
         await action_button.first.click()
     popup = await popup_info.value
+    popup.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
     await popup.wait_for_load_state("domcontentloaded")
     status = popup.locator('select[name="status"]')
     options = await status.locator("option").evaluate_all("es=>es.map(e=>({t:e.textContent.trim(),v:e.value}))")
@@ -122,7 +169,12 @@ async def _product(page: Page, row, preview: bool, restock: bool = False) -> dic
     if await submit.count() == 0:
         raise RuntimeError(f"{SITE}: 상품 상태 변경 등록 버튼을 찾지 못했습니다.")
     await submit.click()
-    await page.wait_for_timeout(1200)
+    await _click_visible_confirm(popup, timeout=5000)
+    await page.wait_for_timeout(1800)
+    verified_row = await _search(page, product_code)
+    is_soldout = "품절" in await verified_row.inner_text()
+    if is_soldout == restock:
+        raise RuntimeError(f"{SITE}: 저장 후 상품 {'재입고' if restock else '품절'} 상태가 반영되지 않았습니다.")
     return {"success": True, "verified": True}
 
 
@@ -135,7 +187,7 @@ async def run(action: str, product_code: str, option_name: str | None = None, pr
             await _login(page)
             row = await _search(page, product_code)
             restock = action.endswith("restock")
-            result = await _option(page, row, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row, preview, restock)
+            result = await _option(page, row, product_code, option_name or "", preview, restock) if action.startswith("option-") else await _product(page, row, product_code, preview, restock)
             return {"site": SITE, "siteCode": SITE_CODE, "action": action, "productCode": product_code, **result}
         except Exception as exc:
             return failed(SITE, SITE_CODE, action, product_code, exc)
