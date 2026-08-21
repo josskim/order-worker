@@ -11,6 +11,7 @@ class ProductStatusJobWaitTests(unittest.IsolatedAsyncioTestCase):
             "action": "product-restock",
             "productCode": "G126121",
             "optionName": None,
+            "siteProductCodes": {"Fownerclan": "F007275"},
             "sites": ["sister"],
         }
         claims = [
@@ -40,4 +41,8 @@ class ProductStatusJobWaitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(claim_job.call_count, 2)
         run_sites.assert_awaited_once()
+        self.assertEqual(
+            run_sites.call_args.kwargs["site_product_codes"],
+            {"Fownerclan": "F007275"},
+        )
         self.assertEqual(complete_job.call_args.kwargs["status"], "succeeded")

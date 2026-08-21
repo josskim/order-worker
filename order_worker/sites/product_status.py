@@ -37,20 +37,38 @@ async def run_sites(
     option_name: str | None,
     sites: list[str],
     preview: bool = False,
+    site_product_codes: dict[str, str | None] | None = None,
     on_progress: Callable[[str | None, list[dict[str, Any]]], None] | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
+    site_product_codes = site_product_codes or {}
     for site_code in sites:
         if on_progress:
             on_progress(site_code, results.copy())
+        resolved_product_code = product_code
+        if site_code in site_product_codes:
+            resolved_product_code = str(site_product_codes[site_code] or "").strip()
+            if not resolved_product_code:
+                results.append(
+                    failed(
+                        LABELS.get(site_code, site_code),
+                        site_code,
+                        action,
+                        product_code,
+                        "F 품절코드가 없어 처리하지 않았습니다.",
+                    )
+                )
+                if on_progress:
+                    on_progress(None, results.copy())
+                continue
         runner = RUNNERS.get(site_code)
         if runner is None:
-            results.append(failed(LABELS.get(site_code, site_code), site_code, action, product_code, "아직 자동 품절 로직이 배포되지 않아 처리하지 않았습니다."))
+            results.append(failed(LABELS.get(site_code, site_code), site_code, action, resolved_product_code, "아직 자동 품절 로직이 배포되지 않아 처리하지 않았습니다."))
             continue
         try:
-            results.append(await runner(action=action, product_code=product_code, option_name=option_name, preview=preview))
+            results.append(await runner(action=action, product_code=resolved_product_code, option_name=option_name, preview=preview))
         except Exception as exc:
-            results.append(failed(LABELS.get(site_code, site_code), site_code, action, product_code, exc))
+            results.append(failed(LABELS.get(site_code, site_code), site_code, action, resolved_product_code, exc))
         if on_progress:
             on_progress(None, results.copy())
     return results

@@ -561,6 +561,12 @@ async def run_job_command(task: str) -> int:
             product_code = str(request.get("productCode") or "")
             option_name = request.get("optionName")
             sites = request.get("sites") or []
+            raw_site_product_codes = request.get("siteProductCodes") or {}
+            site_product_codes = (
+                {str(site): (str(code) if code is not None else None) for site, code in raw_site_product_codes.items()}
+                if isinstance(raw_site_product_codes, dict)
+                else {}
+            )
             def report_product_status_progress(current_site: str | None, summary: list[dict]) -> None:
                 try:
                     update_job_progress(
@@ -575,6 +581,7 @@ async def run_job_command(task: str) -> int:
                 product_code=product_code,
                 option_name=str(option_name) if option_name else None,
                 sites=[str(site) for site in sites],
+                site_product_codes=site_product_codes,
                 on_progress=report_product_status_progress,
             )
             success_count = sum(1 for result in results if result.get("success"))
