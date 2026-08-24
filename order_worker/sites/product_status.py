@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from functools import partial
 from typing import Any, Callable
 
@@ -29,6 +30,8 @@ LABELS = {
     "domesin": "도매의신",
     "sister": "시스터",
 }
+
+SITE_TIMEOUT_SECONDS = 180
 
 
 async def run_sites(
@@ -66,7 +69,27 @@ async def run_sites(
             results.append(failed(LABELS.get(site_code, site_code), site_code, action, resolved_product_code, "아직 자동 품절 로직이 배포되지 않아 처리하지 않았습니다."))
             continue
         try:
-            results.append(await runner(action=action, product_code=resolved_product_code, option_name=option_name, preview=preview))
+            results.append(
+                await asyncio.wait_for(
+                    runner(
+                        action=action,
+                        product_code=resolved_product_code,
+                        option_name=option_name,
+                        preview=preview,
+                    ),
+                    timeout=SITE_TIMEOUT_SECONDS,
+                )
+            )
+        except asyncio.TimeoutError:
+            results.append(
+                failed(
+                    LABELS.get(site_code, site_code),
+                    site_code,
+                    action,
+                    resolved_product_code,
+                    f"{SITE_TIMEOUT_SECONDS}초 동안 완료되지 않아 시간 초과 처리했습니다.",
+                )
+            )
         except Exception as exc:
             results.append(failed(LABELS.get(site_code, site_code), site_code, action, resolved_product_code, exc))
         if on_progress:

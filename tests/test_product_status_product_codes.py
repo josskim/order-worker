@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -54,6 +55,25 @@ class ProductStatusProductCodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(results[0]["success"])
         self.assertEqual(results[0]["productCode"], "G126655")
         self.assertIn("F 품절코드", results[0]["error"])
+
+    async def test_site_timeout_is_recorded_and_pipeline_completes(self):
+        async def slow_runner(**_kwargs):
+            await asyncio.sleep(1)
+
+        with (
+            patch.dict(product_status.RUNNERS, {"domesin": slow_runner}, clear=True),
+            patch.object(product_status, "SITE_TIMEOUT_SECONDS", 0.01),
+        ):
+            results = await product_status.run_sites(
+                action="option-soldout",
+                product_code="G125628",
+                option_name="블랙/FREE",
+                sites=["domesin"],
+            )
+
+        self.assertFalse(results[0]["success"])
+        self.assertEqual(results[0]["siteCode"], "domesin")
+        self.assertIn("시간 초과", results[0]["error"])
 
 
 if __name__ == "__main__":
