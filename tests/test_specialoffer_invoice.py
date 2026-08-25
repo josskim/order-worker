@@ -39,6 +39,15 @@ class SpecialOfferInvoiceResultTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(0, result["uploadedCount"])
 
+    def test_export_count_must_match_completed_count(self) -> None:
+        result = parse_result(
+            "총배송건수 2건\n완료건수 2건\n실패건수 0건",
+            expected_count=3,
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("대상 3", result["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
