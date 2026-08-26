@@ -34,6 +34,12 @@ def option_values_match(option_name: str, remote_values: list[str]) -> bool:
     return target == remote
 
 
+async def _select_model_search(page: Page) -> None:
+    search_type = page.locator('select[name="s_check"]:visible').first
+    await search_type.wait_for(state="visible", timeout=10000)
+    await search_type.select_option("model")
+
+
 async def _accept_dialog(dialog) -> None:
     await dialog.accept()
 
@@ -60,6 +66,10 @@ async def _search_product(page: Page, product_code: str, account):
     else:
         raise RuntimeError(f"오너클랜 상품관리 화면에 접근하지 못했습니다: {page.url}")
 
+    # 통합검색은 상품명 등에 같은 코드가 포함된 여러 상품을 반환할 수 있다.
+    # 오너클랜의 모델명에는 인트라넷 G/F 코드가 정확히 저장되어 있으므로
+    # 두 계정 모두 모델명으로 범위를 제한한 뒤 검색한다.
+    await _select_model_search(page)
     await search_input.fill(product_code)
     await page.locator('button[onclick*="SearchPrd"]:visible').first.click()
     await page.wait_for_load_state("networkidle")
