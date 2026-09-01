@@ -22,8 +22,8 @@ from order_worker.sites import (
     onchannel_invoice,
     ownerclan,
     ownerclan_invoice,
-    ownerclan_registration,
     ownerclan_status,
+    product_registration,
     product_status,
     sister,
     sister_invoice,
@@ -600,7 +600,7 @@ async def run_job_command(task: str) -> int:
                     )
                 except Exception as progress_error:
                     print(f"PROGRESS: [job] registration progress update failed: {progress_error}")
-            results = await ownerclan_registration.run(request, preview=False, on_progress=report_registration_progress)
+            results = await product_registration.run_sites(request, preview=False, on_progress=report_registration_progress)
             success_count = sum(1 for result in results if result.get("success"))
             details.update({"request": request, "summary": results})
             details["status"] = "succeeded" if success_count == len(results) else ("partial" if success_count else "failed")
