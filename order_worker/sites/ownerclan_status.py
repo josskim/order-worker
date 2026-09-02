@@ -5,7 +5,7 @@ import re
 import unicodedata
 from typing import Any
 
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from order_worker import config
 from order_worker.sites.ownerclan import ACCOUNTS
@@ -44,19 +44,43 @@ async def _accept_dialog(dialog) -> None:
     await dialog.accept()
 
 
+async def _stop_loading(page: Page) -> None:
+    try:
+        await page.evaluate("window.stop()")
+    except Exception:
+        pass
+
+
+async def _goto(page: Page, url: str) -> None:
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+    except PlaywrightTimeoutError:
+        # 오너클랜은 화면이 준비된 뒤에도 광고/추적 리소스 연결이 남아
+        # 탐색 완료가 지연될 수 있다. 필요한 DOM이 있으면 계속 진행한다.
+        pass
+    await page.wait_for_timeout(600)
+    await _stop_loading(page)
+
+
 async def _login(page: Page, account) -> None:
     _, user_id, password, label = account
     print(f"PROGRESS: [{label}] 로그인 중...")
-    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    page.set_default_timeout(12000)
+    page.set_default_navigation_timeout(15000)
+    await _goto(page, LOGIN_URL)
     await page.fill('input[name="id"]', user_id)
     await page.fill('input[name="passwd"]', password)
-    await page.click('input[type="submit"]')
-    await page.wait_for_load_state("networkidle")
+    try:
+        await page.click('input[type="submit"]')
+    except PlaywrightTimeoutError:
+        pass
+    await page.wait_for_timeout(800)
+    await _stop_loading(page)
 
 
 async def _search_product(page: Page, product_code: str, account):
     for attempt in range(2):
-        await page.goto(MANAGEMENT_URL, wait_until="networkidle")
+        await _goto(page, MANAGEMENT_URL)
         search_input = page.locator('input[name="search"]:visible').first
         if await search_input.count() == 1:
             break
@@ -71,8 +95,16 @@ async def _search_product(page: Page, product_code: str, account):
     # 두 계정 모두 모델명으로 범위를 제한한 뒤 검색한다.
     await _select_model_search(page)
     await search_input.fill(product_code)
-    await page.locator('button[onclick*="SearchPrd"]:visible').first.click()
-    await page.wait_for_load_state("networkidle")
+    try:
+        await page.locator('button[onclick*="SearchPrd"]:visible').first.click()
+    except PlaywrightTimeoutError:
+        pass
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+    except PlaywrightTimeoutError:
+        pass
+    await page.wait_for_timeout(600)
+    await _stop_loading(page)
 
     edit_links = page.locator('a[href*="GoPrdinfo"]')
     count = await edit_links.count()
@@ -91,7 +123,12 @@ async def _open_editor(page: Page, edit_link) -> Page:
     async with page.expect_popup(timeout=15000) as popup_info:
         await edit_link.click()
     editor = await popup_info.value
-    await editor.wait_for_load_state("networkidle")
+    try:
+        await editor.wait_for_load_state("domcontentloaded", timeout=15000)
+    except PlaywrightTimeoutError:
+        pass
+    await _stop_loading(editor)
+    await editor.locator("#btn_option").wait_for(state="visible", timeout=12000)
     editor.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
     return editor
 
@@ -100,7 +137,12 @@ async def _open_option_editor(editor: Page) -> Page:
     async with editor.expect_popup(timeout=15000) as popup_info:
         await editor.locator("#btn_option").click()
     option_page = await popup_info.value
-    await option_page.wait_for_load_state("networkidle")
+    try:
+        await option_page.wait_for_load_state("domcontentloaded", timeout=15000)
+    except PlaywrightTimeoutError:
+        pass
+    await _stop_loading(option_page)
+    await option_page.locator("select.opStatus").first.wait_for(state="visible", timeout=12000)
     option_page.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
     return option_page
 

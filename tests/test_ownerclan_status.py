@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from order_worker.sites.ownerclan_status import _select_model_search, option_values_match
+from order_worker.sites.ownerclan_status import _goto, _select_model_search, option_values_match
 
 
 def test_matches_single_color_to_color_size_option() -> None:
@@ -29,3 +29,19 @@ def test_ownerclan_search_uses_model_field() -> None:
     page.locator.assert_called_once_with('select[name="s_check"]:visible')
     search_type.wait_for.assert_awaited_once_with(state="visible", timeout=10000)
     search_type.select_option.assert_awaited_once_with("model")
+
+
+def test_ownerclan_navigation_does_not_wait_for_network_idle() -> None:
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.wait_for_timeout = AsyncMock()
+    page.evaluate = AsyncMock()
+
+    asyncio.run(_goto(page, "https://ownerclan.example/products"))
+
+    page.goto.assert_awaited_once_with(
+        "https://ownerclan.example/products",
+        wait_until="domcontentloaded",
+        timeout=15000,
+    )
+    page.evaluate.assert_awaited_once_with("window.stop()")
