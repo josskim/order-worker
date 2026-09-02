@@ -129,16 +129,16 @@ async def _keep_requested_category(page: Page) -> None:
 
 
 async def _set_editor_html(page: Page, html: str) -> None:
-    await page.locator("#editor").evaluate(
-        """(element, value) => {
-          element.value = value;
-          element.dispatchEvent(new Event('input', {bubbles:true}));
-          element.dispatchEvent(new Event('change', {bubbles:true}));
-          if (window.CKEDITOR?.instances?.editor) window.CKEDITOR.instances.editor.setData(value);
-          if (window.editor?.setData) window.editor.setData(value);
-        }""",
-        html,
-    )
+    source_button = page.get_by_role("button", name="Source", exact=True).first
+    await source_button.wait_for(state="visible", timeout=12000)
+    source_area = page.locator(".ck-editor textarea:visible").first
+    if await source_area.count() == 0:
+        await source_button.click()
+        await source_area.wait_for(state="visible", timeout=5000)
+    await source_area.fill(html)
+    saved_html = await source_area.input_value()
+    if saved_html != html:
+        raise RuntimeError("온채널 Source 입력 영역에 상품상세 이미지 HTML이 반영되지 않았습니다.")
 
 
 async def _fill_basic_form(
@@ -275,7 +275,7 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
                     return {"site": label, "siteCode": site_code, "success": True, "preview": True, "productCode": product_code, "message": "온채널 필수값 자동입력 검증 완료(임시저장 전 중단)"}
 
                 await _set_editor_html(page, str(request.get("detailHtml") or ""))
-                await page.locator(".btn-temp-save").last.click(no_wait_after=True)
+                await page.locator(".btn-temp-save:visible").last.click(no_wait_after=True)
                 await page.wait_for_timeout(2200)
                 if await _draft_exists(page, product_code):
                     return {"site": label, "siteCode": site_code, "success": True, "draftSaved": True, "productCode": product_code, "message": f"임시저장 완료: {product_code}"}
