@@ -5,10 +5,12 @@ import os
 import re
 import shutil
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import requests
+from PIL import Image, ImageOps
 from playwright.async_api import Locator, Page, async_playwright
 
 from order_worker import config
@@ -19,6 +21,7 @@ SITE_CODE = "namdo"
 LOGIN_URL = "https://ceo.ndmarket.co.kr/wholesale/login"
 MANAGEMENT_URL = "https://ceo.ndmarket.co.kr/wholesale/product"
 REGISTER_URL = "https://ceo.ndmarket.co.kr/wholesale/product/create"
+PRODUCT_IMAGE_SIZE = 1000
 
 
 def _credentials() -> tuple[str, str]:
@@ -29,16 +32,29 @@ def _credentials() -> tuple[str, str]:
     return user_id, password
 
 
+def _normalize_product_image(content: bytes, target: Path) -> None:
+    """Fit an uploaded product image into Namdo's square image format without cropping."""
+    with Image.open(BytesIO(content)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.thumbnail((PRODUCT_IMAGE_SIZE, PRODUCT_IMAGE_SIZE), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (PRODUCT_IMAGE_SIZE, PRODUCT_IMAGE_SIZE), "white")
+        canvas.paste(
+            image,
+            ((PRODUCT_IMAGE_SIZE - image.width) // 2, (PRODUCT_IMAGE_SIZE - image.height) // 2),
+        )
+        canvas.save(target, format="JPEG", quality=95, optimize=True)
+
+
 def _download_images(account: dict[str, Any], namdo: dict[str, Any], target_dir: Path) -> tuple[list[Path], Path]:
     max_images = min(20, max(1, int(namdo.get("maxProductImages") or 20)))
     items = account.get("galleryImages") or [account["mainImage"], *account.get("additionalImages", [])]
     product_paths: list[Path] = []
     for index, item in enumerate(items[:max_images]):
-        file_name = Path(str(item.get("fileName") or f"image-{index + 1}.jpg")).name
-        target = target_dir / f"product-{index + 1:02d}-{file_name}"
+        file_name = Path(str(item.get("fileName") or f"image-{index + 1}.jpg")).stem
+        target = target_dir / f"product-{index + 1:02d}-{file_name}.jpg"
         response = requests.get(str(item["url"]), timeout=45)
         response.raise_for_status()
-        target.write_bytes(response.content)
+        _normalize_product_image(response.content, target)
         product_paths.append(target)
     if not product_paths:
         raise RuntimeError(f"{SITE}에 등록할 상품이미지가 없습니다.")

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Local worker for collecting vendor order Excel files and uploading them to intranet."
 requires-python = ">=3.11"
 dependencies = [
+  "Pillow>=11.0.0",
   "playwright==1.56.0",
   "requests>=2.32.0",
   "xlrd==2.0.2",
