@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from order_worker.sites import domeggook_registration, domesin_registration, onchannel_registration, ownerclan_registration, specialoffer_registration
+from order_worker.sites import domeggook_registration, domesin_registration, namdo_registration, onchannel_registration, ownerclan_registration, specialoffer_registration
 
 
 RUNNERS = {
@@ -14,6 +14,7 @@ RUNNERS = {
     "Fdomeggook": domeggook_registration.run_account,
     "specialoffer": specialoffer_registration.run_account,
     "domesin": domesin_registration.run_account,
+    "namdo": namdo_registration.run_account,
 }
 
 
