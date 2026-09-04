@@ -13,6 +13,9 @@ COPY scripts/railway-entrypoint.sh ./scripts/railway-entrypoint.sh
 
 RUN python -m pip install --upgrade pip \
     && python -m pip install . \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* \
     && chmod +x ./scripts/railway-entrypoint.sh
 
 ENTRYPOINT ["./scripts/railway-entrypoint.sh"]

@@ -7,7 +7,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from order_worker.sites.namdo_registration import PRODUCT_IMAGE_SIZE, _normalize_product_image
+from order_worker.sites.namdo_registration import (
+    DEFAULT_WATERMARK_TEXT,
+    PRODUCT_IMAGE_SIZE,
+    _apply_repeated_watermark,
+    _normalize_product_image,
+)
 
 
 class NamdoRegistrationImageTests(unittest.TestCase):
@@ -37,6 +42,13 @@ class NamdoRegistrationImageTests(unittest.TestCase):
             with Image.open(target) as result:
                 self.assertEqual(result.mode, "RGB")
                 self.assertEqual(result.size, (PRODUCT_IMAGE_SIZE, PRODUCT_IMAGE_SIZE))
+
+    def test_repeated_watermark_preserves_size_and_changes_pixels(self):
+        source = Image.new("RGB", (1000, 1000), (120, 90, 70))
+        result = _apply_repeated_watermark(source, DEFAULT_WATERMARK_TEXT)
+
+        self.assertEqual(result.size, source.size)
+        self.assertNotEqual(result.tobytes(), source.tobytes())
 
 
 if __name__ == "__main__":

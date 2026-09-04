@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from playwright.async_api import Locator, Page, async_playwright
 
 from order_worker import config
@@ -22,6 +22,13 @@ LOGIN_URL = "https://ceo.ndmarket.co.kr/wholesale/login"
 MANAGEMENT_URL = "https://ceo.ndmarket.co.kr/wholesale/product"
 REGISTER_URL = "https://ceo.ndmarket.co.kr/wholesale/product/create"
 PRODUCT_IMAGE_SIZE = 1000
+DEFAULT_WATERMARK_TEXT = "Praha Shop 조원"
+WATERMARK_FONT_PATHS = (
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf"),
+    Path("C:/Windows/Fonts/malgun.ttf"),
+    Path("C:/Windows/Fonts/malgunbd.ttf"),
+)
 
 
 def _credentials() -> tuple[str, str]:
@@ -32,7 +39,42 @@ def _credentials() -> tuple[str, str]:
     return user_id, password
 
 
-def _normalize_product_image(content: bytes, target: Path) -> None:
+def _watermark_font(size: int) -> ImageFont.FreeTypeFont:
+    configured = os.getenv("NAMDO_WATERMARK_FONT", "").strip()
+    candidates = ([Path(configured)] if configured else []) + list(WATERMARK_FONT_PATHS)
+    for path in candidates:
+        if path.is_file():
+            return ImageFont.truetype(str(path), size=size)
+    raise RuntimeError("남도마켓 워터마크에 사용할 한글 글꼴을 찾지 못했습니다.")
+
+
+def _apply_repeated_watermark(image: Image.Image, text: str = DEFAULT_WATERMARK_TEXT) -> Image.Image:
+    """Overlay a light diagonal repeating watermark while preserving image dimensions."""
+    clean_text = text.strip()
+    if not clean_text:
+        return image.convert("RGB")
+    base = image.convert("RGBA")
+    font = _watermark_font(max(28, round(min(base.size) * 0.045)))
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    left, top, right, bottom = probe.textbbox((0, 0), clean_text, font=font)
+    label = Image.new("RGBA", (right - left + 48, bottom - top + 32), (0, 0, 0, 0))
+    label_draw = ImageDraw.Draw(label)
+    label_draw.text((26 - left, 17 - top), clean_text, font=font, fill=(235, 235, 235, 96))
+    diagonal = label.rotate(35, expand=True, resample=Image.Resampling.BICUBIC)
+
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    step_x = max(240, diagonal.width + 20)
+    step_y = max(150, diagonal.height + 10)
+    row = 0
+    for y in range(-diagonal.height, base.height + diagonal.height, step_y):
+        offset = -(step_x // 2) if row % 2 else 0
+        for x in range(-diagonal.width + offset, base.width + diagonal.width, step_x):
+            overlay.alpha_composite(diagonal, (x, y))
+        row += 1
+    return Image.alpha_composite(base, overlay).convert("RGB")
+
+
+def _normalize_product_image(content: bytes, target: Path, watermark_text: str = "") -> None:
     """Fit an uploaded product image into Namdo's square image format without cropping."""
     with Image.open(BytesIO(content)) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
@@ -42,11 +84,23 @@ def _normalize_product_image(content: bytes, target: Path) -> None:
             image,
             ((PRODUCT_IMAGE_SIZE - image.width) // 2, (PRODUCT_IMAGE_SIZE - image.height) // 2),
         )
+        if watermark_text:
+            canvas = _apply_repeated_watermark(canvas, watermark_text)
         canvas.save(target, format="JPEG", quality=95, optimize=True)
+
+
+def _save_watermarked_content_image(content: bytes, target: Path, watermark_text: str) -> None:
+    with Image.open(BytesIO(content)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        if watermark_text:
+            image = _apply_repeated_watermark(image, watermark_text)
+        image.save(target, format="JPEG", quality=95, optimize=True)
 
 
 def _download_images(account: dict[str, Any], namdo: dict[str, Any], target_dir: Path) -> tuple[list[Path], Path]:
     max_images = min(20, max(1, int(namdo.get("maxProductImages") or 20)))
+    watermark = namdo.get("watermark") or {}
+    watermark_text = str(watermark.get("text") or DEFAULT_WATERMARK_TEXT).strip() if watermark.get("enabled", True) else ""
     items = account.get("galleryImages") or [account["mainImage"], *account.get("additionalImages", [])]
     product_paths: list[Path] = []
     for index, item in enumerate(items[:max_images]):
@@ -54,7 +108,7 @@ def _download_images(account: dict[str, Any], namdo: dict[str, Any], target_dir:
         target = target_dir / f"product-{index + 1:02d}-{file_name}.jpg"
         response = requests.get(str(item["url"]), timeout=45)
         response.raise_for_status()
-        _normalize_product_image(response.content, target)
+        _normalize_product_image(response.content, target, watermark_text)
         product_paths.append(target)
     if not product_paths:
         raise RuntimeError(f"{SITE}에 등록할 상품이미지가 없습니다.")
@@ -62,11 +116,11 @@ def _download_images(account: dict[str, Any], namdo: dict[str, Any], target_dir:
     content_item = namdo.get("contentImage") or account.get("mainImage")
     if not content_item or not content_item.get("url"):
         raise RuntimeError(f"{SITE} 상세 이미지로 사용할 메인컷이 없습니다.")
-    content_name = Path(str(content_item.get("fileName") or "content.jpg")).name
-    content_path = target_dir / f"content-{content_name}"
+    content_name = Path(str(content_item.get("fileName") or "content.jpg")).stem
+    content_path = target_dir / f"content-{content_name}.jpg"
     response = requests.get(str(content_item["url"]), timeout=45)
     response.raise_for_status()
-    content_path.write_bytes(response.content)
+    _save_watermarked_content_image(response.content, content_path, watermark_text)
     return product_paths, content_path
 
 
