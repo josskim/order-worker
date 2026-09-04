@@ -23,6 +23,7 @@ from order_worker.sites import (
     ownerclan,
     ownerclan_invoice,
     ownerclan_status,
+    product_edit,
     product_registration,
     product_status,
     sister,
@@ -605,6 +606,22 @@ async def run_job_command(task: str) -> int:
             details.update({"request": request, "summary": results})
             details["status"] = "succeeded" if success_count == len(results) else ("partial" if success_count else "failed")
             exit_code = 0 if success_count else 1
+        elif task == "product-edit":
+            request = ((claim.job or {}).get("result") or {}).get("request") or {}
+            def report_edit_progress(current_site: str | None, summary: list[dict]) -> None:
+                try:
+                    update_job_progress(
+                        job_id=job_id,
+                        task=task,
+                        result={"request": request, "summary": summary, "currentSite": current_site},
+                    )
+                except Exception as progress_error:
+                    print(f"PROGRESS: [job] product edit progress update failed: {progress_error}")
+            results = await product_edit.run_sites(request, preview=False, on_progress=report_edit_progress)
+            success_count = sum(1 for result in results if result.get("success"))
+            details.update({"request": request, "summary": results})
+            details["status"] = "succeeded" if success_count == len(results) else ("partial" if success_count else "failed")
+            exit_code = 0 if success_count else 1
         else:
             raise ValueError(f"Unsupported job task: {task}")
 
@@ -659,7 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
     job_parser = subparsers.add_parser("run-job", help="Run a DB-claimed Railway manual job")
     job_parser.add_argument(
         "--task",
-        choices=["collect", "invoices", "invoices-real", "invoices-fake", "product-status", "product-registration"],
+        choices=["collect", "invoices", "invoices-real", "invoices-fake", "product-status", "product-registration", "product-edit"],
         required=True,
     )
     status_parser = subparsers.add_parser("product-status", help="Update a vendor product or option sales status")
