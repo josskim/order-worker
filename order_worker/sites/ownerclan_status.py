@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import unicodedata
 from typing import Any
@@ -32,6 +33,41 @@ def option_values_match(option_name: str, remote_values: list[str]) -> bool:
     if len(target) == 1:
         return target[0] in remote
     return target == remote
+
+
+def _walk_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_dicts(child)
+
+
+def option_payload_has_status(raw_payload: str, option_name: str, wanted: str) -> bool:
+    """Confirm the *target* option in the editor payload, not any sold-out row."""
+    try:
+        payload = json.loads(raw_payload)
+    except (TypeError, ValueError):
+        return False
+    target = _target_tokens(option_name)
+    wanted_normalized = _normalize(wanted)
+    for node in _walk_dicts(payload):
+        status = next(
+            (
+                _normalize(str(node[key]))
+                for key in ("status", "sale_status", "opStatus")
+                if node.get(key) is not None
+            ),
+            "",
+        )
+        if status != wanted_normalized:
+            continue
+        serialized = _normalize(json.dumps(node, ensure_ascii=False))
+        if target and all(token in serialized for token in target):
+            return True
+    return False
 
 
 async def _select_model_search(page: Page) -> None:
@@ -186,9 +222,69 @@ async def _verify_option_status(page: Page, product_code: str, option_name: str,
             await editor.close()
 
 
+async def _wait_for_editor_option_status(editor: Page, option_name: str, wanted: str) -> None:
+    payload = editor.locator("#optionsData")
+    for _ in range(40):
+        if await payload.count() == 1:
+            raw_payload = await payload.input_value()
+            if option_payload_has_status(raw_payload, option_name, wanted):
+                return
+        await editor.wait_for_timeout(250)
+    raise RuntimeError(f"오너클랜 옵션 팝업 반영을 확인하지 못했습니다: {option_name}")
+
+
+async def _submit_open_option_status(
+    page: Page,
+    editor: Page,
+    option_page: Page,
+    index: int,
+    values: list[str],
+    option_name: str,
+    wanted: str,
+    product_code: str,
+) -> str:
+    label = "/".join(values)
+    print(f"PROGRESS: [오너클랜] {product_code} / {label} 옵션 상태 변경...")
+    await option_page.locator("select.opStatus").nth(index).select_option(wanted)
+    await option_page.locator('button[onclick*="setupOption"]').click()
+    # setupOption은 팝업의 값을 부모 상품수정 창 #optionsData에 복사한다.
+    # 다른 옵션 하나만 SOLDOUT이어도 통과하던 기존 검증 대신 대상 옵션을
+    # 정확히 확인하고 나서 팝업을 닫고 상품 수정을 저장한다.
+    await _wait_for_editor_option_status(editor, option_name, wanted)
+    if not option_page.is_closed():
+        await option_page.close()
+
+    print(f"PROGRESS: [오너클랜] {product_code} 상품 수정 저장...")
+    await editor.locator('a[href*="formSubmit(\'update\')"]').click()
+    # 저장 확인/안내 다이얼로그와 서버 반영이 느린 상품이 있어 기존 2.5초
+    # 고정 대기보다 충분히 기다린 뒤 별도 상품관리 화면에서 재검증한다.
+    await page.wait_for_timeout(5000)
+    return label
+
+
+async def _apply_option_status(page: Page, product_code: str, option_name: str, wanted: str, account) -> str:
+    _, edit_link = await _search_product(page, product_code, account)
+    editor = await _open_editor(page, edit_link)
+    try:
+        option_page = await _open_option_editor(editor)
+        try:
+            index, values, _ = await _find_option_row(option_page, option_name)
+            return await _submit_open_option_status(
+                page, editor, option_page, index, values, option_name, wanted, product_code
+            )
+        finally:
+            if not option_page.is_closed():
+                await option_page.close()
+    finally:
+        if not editor.is_closed():
+            await editor.close()
+
+
 async def option_status(page: Page, product_code: str, option_name: str, account, preview: bool = False, restock: bool = False) -> dict[str, Any]:
     _, edit_link = await _search_product(page, product_code, account)
     editor = await _open_editor(page, edit_link)
+    initial_error: Exception | None = None
+    option_page: Page | None = None
     try:
         option_page = await _open_option_editor(editor)
         index, values, current_status = await _find_option_row(option_page, option_name)
@@ -198,24 +294,30 @@ async def option_status(page: Page, product_code: str, option_name: str, account
             return {"success": True, "alreadyProcessed": True, "matchedOption": label}
         if preview:
             return {"success": True, "preview": True, "matchedOption": label, "currentStatus": current_status}
+        try:
+            await _submit_open_option_status(
+                page, editor, option_page, index, values, option_name, wanted, product_code
+            )
+        except Exception as exc:
+            initial_error = exc
 
-        print(f"PROGRESS: [오너클랜] {product_code} / {label} 옵션 상태 변경...")
-        await option_page.locator("select.opStatus").nth(index).select_option(wanted)
-        await option_page.locator('button[onclick*="setupOption"]').click()
-        await editor.wait_for_function(
-            f"() => {{ try {{ const data = JSON.parse(document.querySelector('#optionsData').value); return data.optionList.some(v => v.status === '{wanted}' || v.sale_status === '{wanted}' || v.opStatus === '{wanted}'); }} catch (_) {{ return true; }} }}",
-            timeout=10000,
-        )
-
-        print(f"PROGRESS: [오너클랜] {product_code} 상품 수정 저장...")
-        await editor.locator('a[href*="formSubmit(\'update\')"]').click()
-        await page.wait_for_timeout(2500)
     finally:
+        if option_page is not None and not option_page.is_closed():
+            await option_page.close()
         if not editor.is_closed():
             await editor.close()
 
-    verified_values = await _verify_option_status(page, product_code, option_name, wanted, account)
-    return {"success": True, "matchedOption": "/".join(verified_values), "verified": True}
+    try:
+        if initial_error is not None:
+            raise initial_error
+        verified_values = await _verify_option_status(page, product_code, option_name, wanted, account)
+        return {"success": True, "matchedOption": "/".join(verified_values), "verified": True}
+    except Exception:
+        print(f"PROGRESS: [오너클랜] {product_code} 저장 검증 실패, 한 번 더 재시도합니다...")
+        await page.wait_for_timeout(1500)
+        await _apply_option_status(page, product_code, option_name, wanted, account)
+        verified_values = await _verify_option_status(page, product_code, option_name, wanted, account)
+        return {"success": True, "matchedOption": "/".join(verified_values), "verified": True}
 
 
 async def product_status(page: Page, product_code: str, account, preview: bool = False, restock: bool = False) -> dict[str, Any]:

@@ -1,7 +1,12 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from order_worker.sites.ownerclan_status import _goto, _select_model_search, option_values_match
+from order_worker.sites.ownerclan_status import (
+    _goto,
+    _select_model_search,
+    option_payload_has_status,
+    option_values_match,
+)
 
 
 def test_matches_single_color_to_color_size_option() -> None:
@@ -14,6 +19,17 @@ def test_matches_full_intranet_option_name() -> None:
 
 def test_does_not_match_different_color() -> None:
     assert not option_values_match("그레이/FREE", ["블랙", "FREE"])
+
+
+def test_payload_status_must_belong_to_target_option() -> None:
+    raw = """{
+        "optionList": [
+            {"value1": "아이보리", "value2": "FREE", "status": "SOLDOUT"},
+            {"value1": "베이지", "value2": "FREE", "status": "SELL"}
+        ]
+    }"""
+    assert not option_payload_has_status(raw, "베이지/FREE", "SOLDOUT")
+    assert option_payload_has_status(raw, "아이보리/FREE", "SOLDOUT")
 
 
 def test_ownerclan_search_uses_model_field() -> None:
