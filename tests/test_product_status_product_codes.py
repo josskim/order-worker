@@ -75,6 +75,25 @@ class ProductStatusProductCodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0]["siteCode"], "domesin")
         self.assertIn("시간 초과", results[0]["error"])
 
+    async def test_namdo_uses_g_code_and_option_name(self):
+        namdo = AsyncMock(return_value={"siteCode": "namdo", "productCode": "G127020", "success": True})
+
+        with patch.dict(product_status.RUNNERS, {"namdo": namdo}, clear=True):
+            results = await product_status.run_sites(
+                action="option-soldout",
+                product_code="G127020",
+                option_name="베이지 / FREE",
+                sites=["namdo"],
+            )
+
+        namdo.assert_awaited_once_with(
+            action="option-soldout",
+            product_code="G127020",
+            option_name="베이지 / FREE",
+            preview=False,
+        )
+        self.assertTrue(results[0]["success"])
+
 
 if __name__ == "__main__":
     unittest.main()

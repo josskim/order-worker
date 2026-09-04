@@ -4,7 +4,7 @@ import asyncio
 from functools import partial
 from typing import Any, Callable
 
-from order_worker.sites import domeggook_status, domesin_status, ownerclan_status, onchannel_status, sister_status, specialoffer_status
+from order_worker.sites import domeggook_status, domesin_status, namdo_status, ownerclan_status, onchannel_status, sister_status, specialoffer_status
 from order_worker.sites.status_utils import failed
 
 RUNNERS = {
@@ -17,6 +17,7 @@ RUNNERS = {
     "domeggook": domeggook_status.run,
     "Fdomeggook": partial(domeggook_status.run, account_code="Fdomeggook"),
     "sister": sister_status.run,
+    "namdo": namdo_status.run,
 }
 
 LABELS = {
@@ -29,6 +30,7 @@ LABELS = {
     "specialoffer": "스페셜오퍼",
     "domesin": "도매의신",
     "sister": "시스터",
+    "namdo": "남도마켓",
 }
 
 SITE_TIMEOUT_SECONDS = 180
