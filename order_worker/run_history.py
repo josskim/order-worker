@@ -8,6 +8,10 @@ import requests
 from order_worker import config
 
 
+def _uses_database() -> bool:
+    return config.ORDER_WORKER_TRANSPORT == "database"
+
+
 @dataclass(frozen=True)
 class ClaimResult:
     acquired: bool
@@ -28,6 +32,11 @@ def claim_run(
     run_date: str,
     details: dict[str, Any] | None = None,
 ) -> ClaimResult:
+    if _uses_database():
+        from order_worker import database_transport
+
+        acquired, run = database_transport.claim_run(run_id, task_key, run_date, details or {})
+        return ClaimResult(acquired=acquired, existing_status=(run or {}).get("status"))
     response = requests.post(
         config.INTRANET_RUN_HISTORY_API_URL,
         headers=_headers(),
@@ -57,6 +66,11 @@ def complete_run(
     status: str,
     details: dict[str, Any] | None = None,
 ) -> None:
+    if _uses_database():
+        from order_worker import database_transport
+
+        database_transport.complete_run(run_id, status, details or {})
+        return
     response = requests.post(
         config.INTRANET_RUN_HISTORY_API_URL,
         headers=_headers(),
@@ -75,6 +89,15 @@ def complete_run(
 
 
 def claim_job(*, job_id: str, task: str) -> ClaimResult:
+    if _uses_database():
+        from order_worker import database_transport
+
+        acquired, job = database_transport.claim_job(job_id, task)
+        return ClaimResult(
+            acquired=acquired,
+            existing_status=(job or {}).get("status"),
+            job=job,
+        )
     response = requests.post(
         config.INTRANET_JOB_API_URL,
         headers=_headers(),
@@ -98,6 +121,10 @@ def claim_job(*, job_id: str, task: str) -> ClaimResult:
 
 
 def is_job_cancelled(*, job_id: str, task: str) -> bool:
+    if _uses_database():
+        from order_worker import database_transport
+
+        return database_transport.is_job_cancelled(job_id, task)
     response = requests.post(
         config.INTRANET_JOB_API_URL,
         headers=_headers(),
@@ -121,6 +148,11 @@ def update_job_progress(
     task: str,
     result: dict[str, Any],
 ) -> None:
+    if _uses_database():
+        from order_worker import database_transport
+
+        database_transport.update_job_progress(job_id, task, result)
+        return
     response = requests.post(
         config.INTRANET_JOB_API_URL,
         headers=_headers(),
@@ -146,6 +178,11 @@ def complete_job(
     result: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
+    if _uses_database():
+        from order_worker import database_transport
+
+        database_transport.complete_job(job_id, task, status, result or {}, error)
+        return
     response = requests.post(
         config.INTRANET_JOB_API_URL,
         headers=_headers(),

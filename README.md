@@ -21,7 +21,7 @@
 ## 설치
 
 ```powershell
-cd E:\dev\order-worker
+cd D:\dev\order-worker
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m playwright install chromium
@@ -36,9 +36,9 @@ INTRANET_API_URL=http://localhost:3001/api/order-import
 INTRANET_LOG_API_URL=http://localhost:3001/api/order-import/log
 INTRANET_RUN_HISTORY_API_URL=http://localhost:3001/api/order-worker/run-history
 ORDER_WORKER_RUN_HISTORY_TOKEN=
-ORDER_WORKER_DOWNLOAD_DIR=E:\dev\order-worker\downloads
-ORDER_WORKER_ARCHIVE_DIR=E:\dev\order-worker\archive
-ORDER_WORKER_LOG_DIR=E:\dev\order-worker\logs
+ORDER_WORKER_DOWNLOAD_DIR=D:\dev\order-worker\downloads
+ORDER_WORKER_ARCHIVE_DIR=D:\dev\order-worker\archive
+ORDER_WORKER_LOG_DIR=D:\dev\order-worker\logs
 ORDER_WORKER_HEADLESS=1
 DOMEGGOOK_ACTION_WAIT_SECONDS=90
 DOMEGGOOK_WAIT_SECONDS=600
@@ -89,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-invoice-task.ps1
 등록:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "E:\dev\order-worker\scripts\install-task.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\dev\order-worker\scripts\install-task.ps1"
 ```
 
 등록된 작업명:
@@ -97,6 +97,27 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "E:\dev\order-worker\scr
 ```text
 Order Worker Weekday Import
 ```
+
+## 인트라넷 버튼 작업 로컬 실행
+
+상품 상태·상품 등록·상품 수정 작업은 Railway를 유지한 채 로컬 실행을 먼저 준비할 수 있습니다.
+로컬 디스패처는 Supabase PostgreSQL의 `order_worker_jobs` 알림을 기다리고, 알림이 유실된
+경우에만 60초 간격으로 대기 작업을 안전 확인합니다. 작업 진행과 완료 상태도 같은 DB에
+원자적으로 저장하므로 Vercel API를 유휴 상태에서 반복 호출하지 않습니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-local-dispatcher-task.ps1
+Start-ScheduledTask -TaskName "Order Worker Local Dispatcher"
+```
+
+인트라넷 운영 환경의 `ORDER_WORKER_LOCAL_TASKS`에 로컬로 전환할 작업을 쉼표로 등록하기
+전까지 기존 Railway 실행은 그대로 유지됩니다. 기본 로컬 대상은 아래 세 작업입니다.
+
+```text
+product-status,product-registration,product-edit
+```
+
+주문 수집과 실송장·가송장 업로드는 별도 검증 전까지 Railway 경로를 유지합니다.
 
 ## 로그와 파일 보관
 

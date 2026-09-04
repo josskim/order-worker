@@ -51,6 +51,9 @@ INTRANET_JOB_API_URL = os.getenv(
 )
 ORDER_WORKER_RUN_HISTORY_TOKEN = os.getenv("ORDER_WORKER_RUN_HISTORY_TOKEN", "")
 ORDER_WORKER_JOB_ID = os.getenv("ORDER_WORKER_JOB_ID", "")
+ORDER_WORKER_TRANSPORT = os.getenv("ORDER_WORKER_TRANSPORT", "http").strip().lower()
+DIRECT_URL = os.getenv("DIRECT_URL", "").strip()
+ORDER_WORKER_LOCAL_POLL_SECONDS = max(15, int(os.getenv("ORDER_WORKER_LOCAL_POLL_SECONDS", "60")))
 INTRANET_INVOICE_EXPORT_API_URL = os.getenv(
     "INTRANET_INVOICE_EXPORT_API_URL",
     "http://localhost:3001/api/invoice-export/file",
