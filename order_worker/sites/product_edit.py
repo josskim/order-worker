@@ -117,7 +117,16 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
             applied.append("공급가")
         if preview:
             return _message(applied, True)
-        save = editor.get_by_role("button", name="승인 요청", exact=True)
+        # The edit popup exposes the action visually as "승인 요청", but its
+        # accessibility name is not stable. The site-owned class is the
+        # reliable selector on the live form.
+        save = editor.locator("button.btn-approve-request:visible").last
+        if await save.count() == 0:
+            # Title-only edits stay on the basic-information tab, where the
+            # final action is rendered but hidden. Move to the second step.
+            await editor.get_by_role("button", name="가격/옵션 정보 입력", exact=True).click(no_wait_after=True)
+            await editor.wait_for_timeout(300)
+            save = editor.locator("button.btn-approve-request:visible").last
         if await save.count() == 0:
             raise RuntimeError("온채널 상품 수정 저장 버튼을 찾지 못했습니다.")
         await save.click()
@@ -134,6 +143,7 @@ async def _domeggook(browser: Browser, site_code: str, product_code: str, change
     if account is None:
         raise RuntimeError(f"도매꾹 계정 설정이 없습니다: {site_code}")
     page = await browser.new_page(viewport={"width": 1800, "height": 1200})
+    page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
     try:
         await domeggook_status._login(page, account)
         row_key = await domeggook_status._search(page, product_code)
@@ -156,14 +166,20 @@ async def _domeggook(browser: Browser, site_code: str, product_code: str, change
             applied.append("판매금액")
         if preview:
             return _message(applied, True)
-        submit = page.locator("#lBtnShowSubmitHelp")
+        blocking_notice = page.locator("#lDialogSellReg:visible .pDialogBtnClose:visible").last
+        if await blocking_notice.count():
+            await blocking_notice.click()
+            await page.wait_for_timeout(250)
+        # Domeggook replaced the old #lBtnShowSubmitHelp control with the
+        # common navy submit button on the edit form.
+        submit = page.locator("button.lBtnSubmit.lBtnNavy:visible").last
         if await submit.count() == 0:
             raise RuntimeError("도매꾹 상품 수정 저장 버튼을 찾지 못했습니다.")
         await submit.click()
-        await page.wait_for_timeout(1200)
-        confirm = page.get_by_text("상품수정", exact=True)
-        if await confirm.count() and await confirm.last.is_visible():
-            await confirm.last.click()
+        await page.wait_for_timeout(600)
+        confirm = page.locator(".pDialog:visible .pDialogBtnHighlighted:visible").last
+        if await confirm.count():
+            await confirm.click()
         await page.wait_for_timeout(1800)
         return _message(applied, False)
     finally:
