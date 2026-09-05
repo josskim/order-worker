@@ -46,9 +46,12 @@ DOMEGGOOK_POLL_SECONDS=3
 DOMEGGOOK_DOWNLOAD_TIMEOUT_SECONDS=90
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+ORDER_TELEGRAM_BOT_TOKEN=
+ORDER_TELEGRAM_CHAT_ID=
 ```
 
 실제 `.env`에는 사이트 계정, DB URL, 텔레그램 토큰 등이 들어갈 수 있으므로 GitHub에 올리지 않습니다.
+`ORDER_TELEGRAM_*`가 있으면 주문서 수집·송장 업로드 알림은 해당 전용 봇을 우선 사용합니다. 기존 `TELEGRAM_*`는 Stay 재고 워커가 예약 차단 알림에 계속 사용할 수 있습니다. 로컬에서는 `runtime/secrets/order-telegram.env`에 주문 전용 값을 분리해 보관할 수 있습니다.
 
 ## 실행
 

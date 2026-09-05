@@ -8,11 +8,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = PROJECT_ROOT / ".env"
 
 
-def _load_env_file() -> None:
-    if not ENV_PATH.exists():
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
         return
 
-    for raw_line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -22,7 +22,7 @@ def _load_env_file() -> None:
         os.environ.setdefault(key, value)
 
 
-_load_env_file()
+_load_env_file(ENV_PATH)
 
 
 def _default_runtime_dir() -> Path:
@@ -34,6 +34,10 @@ def _default_runtime_dir() -> Path:
 
 
 RUNTIME_DIR = _default_runtime_dir()
+ORDER_TELEGRAM_ENV_PATH = Path(
+    os.getenv("ORDER_TELEGRAM_ENV", PROJECT_ROOT / "runtime" / "secrets" / "order-telegram.env")
+)
+_load_env_file(ORDER_TELEGRAM_ENV_PATH)
 DOWNLOAD_DIR = Path(os.getenv("ORDER_WORKER_DOWNLOAD_DIR", RUNTIME_DIR / "downloads"))
 ARCHIVE_DIR = Path(os.getenv("ORDER_WORKER_ARCHIVE_DIR", RUNTIME_DIR / "archive"))
 LOG_DIR = Path(os.getenv("ORDER_WORKER_LOG_DIR", RUNTIME_DIR / "logs"))
@@ -81,8 +85,10 @@ SISTER_PRODUCT_STATUS_TOKEN = os.getenv(
     SISTER_ORDER_EXPORT_TOKEN,
 )
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Order collection/invoice notifications can use a dedicated bot while the
+# inventory worker keeps reading the legacy TELEGRAM_* reservation bot values.
+TELEGRAM_BOT_TOKEN = os.getenv("ORDER_TELEGRAM_BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
+TELEGRAM_CHAT_ID = os.getenv("ORDER_TELEGRAM_CHAT_ID", os.getenv("TELEGRAM_CHAT_ID", ""))
 
 DOMEGGOOK_ACTION_WAIT_SECONDS = int(
     os.getenv("DOMEGGOOK_ACTION_WAIT_SECONDS", "90")
