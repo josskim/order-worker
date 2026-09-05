@@ -109,6 +109,10 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
         if price is not None:
             await editor.get_by_role("button", name="가격/옵션 정보 입력", exact=True).click(no_wait_after=True)
             await editor.wait_for_timeout(300)
+            select_all = editor.locator("#allChk")
+            if await select_all.count() != 1:
+                raise RuntimeError("온채널 상품 수정 화면에서 옵션 전체 선택 체크박스를 찾지 못했습니다.")
+            await select_all.check()
             price_fields = editor.locator('input[name^="options["][name$="[onch_price]"]')
             if await price_fields.count() == 0:
                 raise RuntimeError("온채널 상품 수정 화면에서 기존 옵션 공급가 입력란을 찾지 못했습니다.")
@@ -138,7 +142,15 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
         await page.close()
 
 
-async def _domeggook(browser: Browser, site_code: str, product_code: str, changes: dict[str, Any], preview: bool) -> dict[str, Any]:
+async def _domeggook(
+    browser: Browser,
+    site_code: str,
+    product_code: str,
+    changes: dict[str, Any],
+    preview: bool,
+    *,
+    search_code: str | None = None,
+) -> dict[str, Any]:
     account = next((item for item in DOMEGGOOK_ACCOUNTS if item[0] == site_code), None)
     if account is None:
         raise RuntimeError(f"도매꾹 계정 설정이 없습니다: {site_code}")
@@ -146,7 +158,29 @@ async def _domeggook(browser: Browser, site_code: str, product_code: str, change
     page.on("dialog", lambda dialog: asyncio.create_task(dialog.accept()))
     try:
         await domeggook_status._login(page, account)
-        row_key = await domeggook_status._search(page, product_code)
+        # The F account stores the external product code (for example F007780)
+        # in the grid, but its management search matches the original G-code in
+        # the product title. Search by the original code, then identify the row
+        # using the external code shown in the result grid.
+        lookup_code = search_code or product_code
+        if lookup_code == product_code:
+            row_key = await domeggook_status._search(page, product_code)
+        else:
+            await page.goto(domeggook_status.MANAGEMENT_URL, wait_until="networkidle")
+            await page.locator('input[name="ttl"]').fill(lookup_code)
+            await page.locator('input[type="submit"]').click()
+            await page.wait_for_timeout(1800)
+            cells = page.locator('td[data-column-name="code"]').filter(has_text=product_code)
+            exact = [
+                cell
+                for cell in await cells.all()
+                if (await cell.inner_text()).strip() == product_code
+            ]
+            if not exact:
+                raise ProductNotFound(product_code)
+            if len(exact) != 1:
+                raise RuntimeError(f"도매꾹: 상품코드 {product_code} 검색 결과를 1건으로 확인하지 못해 처리하지 않았습니다.")
+            row_key = await exact[0].get_attribute("data-row-key") or "0"
         item_no = (await page.locator(f'td[data-row-key="{row_key}"][data-column-name="no"]').inner_text()).strip()
         await page.goto(f"https://www.domeggook.com/sc/item/editFrm/{item_no}", wait_until="domcontentloaded")
         applied: list[str] = []
@@ -266,8 +300,15 @@ async def _namdo(browser: Browser, site_code: str, product_code: str, changes: d
             await page.get_by_placeholder("상품명 입력 해주세요", exact=True).fill(title)
             applied.append("상품명")
         if price is not None:
-            await page.get_by_placeholder("판매 가격을 입력해주세요.", exact=True).fill(str(price))
-            applied.append("판매가격")
+            option_section = page.get_by_text("옵션 상세 수정", exact=True).locator("xpath=ancestor::section[1]")
+            if await option_section.count() != 1:
+                raise RuntimeError("남도마켓 옵션 상세 수정 영역을 찾지 못했습니다.")
+            price_fields = option_section.get_by_placeholder("판매 가격을 입력해주세요.", exact=True)
+            if await price_fields.count() == 0:
+                raise RuntimeError("남도마켓 옵션가격 입력란을 찾지 못했습니다.")
+            for index in range(await price_fields.count()):
+                await price_fields.nth(index).fill(str(price))
+            applied.append(f"옵션가격 {await price_fields.count()}개")
         if preview:
             return _message(applied, True)
         save = page.get_by_role("button", name="수정하기", exact=True)
@@ -315,7 +356,20 @@ async def run_sites(
                     results.append(failed(LABELS.get(site_code, site_code), site_code, "product-edit", product_code, "상품 수정 자동화가 연결되지 않았습니다."))
                     continue
                 try:
-                    result = await asyncio.wait_for(runner(browser, site_code, product_code, changes, preview), timeout=240)
+                    if site_code == "Fdomeggook":
+                        result = await asyncio.wait_for(
+                            _domeggook(
+                                browser,
+                                site_code,
+                                product_code,
+                                changes,
+                                preview,
+                                search_code=str(request.get("productCode") or "").strip() or None,
+                            ),
+                            timeout=240,
+                        )
+                    else:
+                        result = await asyncio.wait_for(runner(browser, site_code, product_code, changes, preview), timeout=240)
                     results.append({"site": LABELS.get(site_code, site_code), "siteCode": site_code, "productCode": product_code, **result})
                 except ProductNotFound:
                     results.append(failed(LABELS.get(site_code, site_code), site_code, "product-edit", product_code, "상품을 찾지 못했습니다."))
