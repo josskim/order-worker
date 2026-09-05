@@ -125,6 +125,57 @@ async def _replace_paragraph(page: Page, marker: str, value: str) -> None:
     await page.wait_for_timeout(400)
 
 
+def _order_url(product_code: str) -> str:
+    return f"https://chowon.prahashop.shop/cafe?p_num={product_code}"
+
+
+async def _replace_order_link_card(page: Page, product_code: str) -> None:
+    url = _order_url(product_code)
+    existing_card = page.locator(".se-component.se-oglink").filter(has_text="chowon.prahashop.shop").first
+    if await existing_card.count():
+        return
+
+    paragraph = page.locator(".se-text-paragraph").filter(
+        has_text="chowon.prahashop.shop/cafe?p_num="
+    ).first
+    if await paragraph.count() == 0:
+        raise RuntimeError("라프 기본 글양식에서 주문 링크 위치를 찾지 못했습니다.")
+
+    await paragraph.scroll_into_view_if_needed()
+    await paragraph.click()
+    await page.wait_for_timeout(100)
+    spans = paragraph.locator("span")
+    first_box = await spans.first.bounding_box()
+    last_box = await spans.last.bounding_box()
+    if not first_box or not last_box:
+        raise RuntimeError("라프 주문 링크 텍스트 영역을 선택하지 못했습니다.")
+    await page.mouse.move(last_box["x"] + last_box["width"] - 1, last_box["y"] + last_box["height"] / 2)
+    await page.mouse.down()
+    await page.mouse.move(first_box["x"] + 1, first_box["y"] + first_box["height"] / 2, steps=12)
+    await page.mouse.up()
+    await page.keyboard.press("Backspace")
+
+    card_count = await page.locator(".se-component.se-oglink").count()
+    await page.locator("button[data-name='oglink']").click()
+    popup = page.locator(".se-popup-oglink:visible")
+    await popup.wait_for(state="visible", timeout=10_000)
+    await popup.locator(".se-popup-oglink-input").fill(url)
+    await popup.locator(".se-popup-oglink-button").click()
+    confirm = popup.locator(".se-popup-button-confirm")
+    for _ in range(60):
+        if await confirm.is_enabled():
+            break
+        await page.wait_for_timeout(500)
+    else:
+        raise RuntimeError("라프 주문 링크 미리보기를 불러오지 못했습니다.")
+    await confirm.click()
+    await page.wait_for_function(
+        """expected => document.querySelectorAll('.se-component.se-oglink').length > expected""",
+        arg=card_count,
+        timeout=10_000,
+    )
+
+
 async def _place_after_paragraph(page: Page, marker: str) -> None:
     paragraph = page.locator(".se-text-paragraph").filter(has_text=marker).first
     if await paragraph.count() == 0:
@@ -186,11 +237,7 @@ async def _fill_product_fields(page: Page, account: dict[str, Any]) -> None:
     await _replace_paragraph(page, "♥ 색상", f"♥ 색상 : {account.get('color') or '-'}")
     await _replace_paragraph(page, "♥ 사이즈", f"♥ 사이즈 : {str(account.get('size') or 'FREE').upper()}")
     await _replace_paragraph(page, "♥ 배송비", f"♥ 배송비 : {int(account.get('deliveryFee') or 3000):,}원")
-    await _replace_paragraph(
-        page,
-        "chowon.prahashop.shop/cafe?p_num=",
-        f"https://chowon.prahashop.shop/cafe?p_num={account.get('code') or ''}",
-    )
+    await _replace_order_link_card(page, str(account.get("code") or ""))
 
 
 async def _publish(page: Page) -> str:
