@@ -20,6 +20,7 @@ SITE_MAP = {
     "domesin": "domegod",
     "domegod": "domegod",
     "namdo": "namdo",
+    "cafe_laf": "cafe_laf",
 }
 
 
@@ -175,16 +176,33 @@ def complete_job(job_id: str, task: str, status: str, result: dict[str, Any], er
             raise RuntimeError("Job not found.")
         if task == "product-registration":
             product_id, sites = _registration_sites(result)
+            summaries = result.get("summary") if isinstance(result.get("summary"), list) else []
             for site in sites:
+                summary = next(
+                    (
+                        entry
+                        for entry in summaries
+                        if isinstance(entry, dict)
+                        and SITE_MAP.get(str(entry.get("siteCode") or entry.get("site") or "")) == site
+                        and entry.get("success") is True
+                    ),
+                    {},
+                )
+                site_stat = str(summary.get("articleUrl") or "연동") if site == "cafe_laf" else "연동"
+                if site == "cafe_laf":
+                    database.execute(
+                        "UPDATE intra_product_sites SET site_stat = %s WHERE product_id = %s AND site = %s",
+                        (site_stat, product_id, site),
+                    )
                 database.execute(
                     """
                     INSERT INTO intra_product_sites (product_id, site, site_stat, created_at)
-                    SELECT %s, %s, '연동', CURRENT_TIMESTAMP
+                    SELECT %s, %s, %s, CURRENT_TIMESTAMP
                     WHERE NOT EXISTS (
                         SELECT 1 FROM intra_product_sites WHERE product_id = %s AND site = %s
                     )
                     """,
-                    (product_id, site, product_id, site),
+                    (product_id, site, site_stat, product_id, site),
                 )
         database.commit()
 

@@ -94,6 +94,13 @@ DOMEGGOOK_DOWNLOAD_TIMEOUT_SECONDS = int(
 )
 HEADLESS = os.getenv("ORDER_WORKER_HEADLESS", "1").lower() not in {"0", "false", "no"}
 
+LAF_CAFE_ID = os.getenv("LAF_CAFE_ID", "26667015").strip()
+LAF_CAFE_SLUG = os.getenv("LAF_CAFE_SLUG", "liveprice").strip()
+LAF_CHROME_DEBUG_PORT = int(os.getenv("LAF_CHROME_DEBUG_PORT", "9223"))
+LAF_CHROME_PROFILE_DIR = Path(
+    os.getenv("LAF_CHROME_PROFILE_DIR", PROJECT_ROOT.parent / "intranet" / "data" / "laf-chrome-profile")
+)
+
 
 def ensure_directories() -> None:
     for path in (DOWNLOAD_DIR, ARCHIVE_DIR, LOG_DIR):

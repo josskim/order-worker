@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 from playwright.async_api import Browser, async_playwright
 
 from order_worker import config
-from order_worker.sites import domeggook_status, domesin_status, namdo_status, ownerclan_status, onchannel_status, specialoffer_status
+from order_worker.sites import domeggook_status, domesin_status, laf, namdo_status, ownerclan_status, onchannel_status, specialoffer_status
 from order_worker.sites.domeggook import ACCOUNTS as DOMEGGOOK_ACCOUNTS
 from order_worker.sites.onchannel import ACCOUNTS as ONCHANNEL_ACCOUNTS
 from order_worker.sites.ownerclan import ACCOUNTS as OWNERCLAN_ACCOUNTS
@@ -24,6 +24,7 @@ LABELS = {
     "specialoffer": "스페셜오퍼",
     "domesin": "도매의신",
     "namdo": "남도마켓",
+    "cafe_laf": "라프",
 }
 
 PRICE_KEYS = {
@@ -331,6 +332,7 @@ RUNNERS: dict[str, Callable[..., Any]] = {
     "specialoffer": _specialoffer,
     "domesin": _domesin,
     "namdo": _namdo,
+    "cafe_laf": laf.run_edit,
 }
 
 
@@ -343,7 +345,33 @@ async def run_sites(
     sites = [str(value) for value in request.get("workerSites", [])]
     changes = request.get("changes") if isinstance(request.get("changes"), dict) else {}
     site_codes = request.get("siteProductCodes") if isinstance(request.get("siteProductCodes"), dict) else {}
+    site_references = request.get("siteReferences") if isinstance(request.get("siteReferences"), dict) else {}
     results = list(request.get("preResults") or [])
+    if "cafe_laf" in sites:
+        site_code = "cafe_laf"
+        product_code = str(site_codes.get(site_code) or request.get("productCode") or "").strip()
+        if on_progress:
+            on_progress(site_code, results.copy())
+        try:
+            result = await asyncio.wait_for(
+                laf.run_edit(
+                    None,
+                    site_code,
+                    product_code,
+                    changes,
+                    preview,
+                    article_url=str(site_references.get(site_code) or "").strip() or None,
+                ),
+                timeout=240,
+            )
+            results.append({"site": LABELS[site_code], "siteCode": site_code, "productCode": product_code, **result})
+        except Exception as exc:
+            results.append(failed(LABELS[site_code], site_code, "product-edit", product_code, exc))
+        if on_progress:
+            on_progress(None, results.copy())
+        sites = [value for value in sites if value != site_code]
+    if not sites:
+        return results
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=config.HEADLESS)
         try:

@@ -14,6 +14,7 @@ class ProductRegistrationTests(unittest.IsolatedAsyncioTestCase):
         specialoffer_runner = AsyncMock(return_value={"siteCode": "specialoffer", "success": True})
         domesin_runner = AsyncMock(return_value={"siteCode": "domesin", "success": True})
         namdo_runner = AsyncMock(return_value={"siteCode": "namdo", "success": True})
+        laf_runner = AsyncMock(return_value={"siteCode": "cafe_laf", "success": True, "articleUrl": "https://cafe.naver.com/liveprice/80415"})
         request = {
             "accounts": [
                 {"siteCode": "ownerclan", "code": "G1"},
@@ -22,13 +23,14 @@ class ProductRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 {"siteCode": "specialoffer", "code": "G1"},
                 {"siteCode": "domesin", "code": "G1"},
                 {"siteCode": "namdo", "code": "G1"},
+                {"siteCode": "cafe_laf", "code": "G1"},
             ]
         }
         progress = []
 
         with patch.dict(
             product_registration.RUNNERS,
-            {"ownerclan": owner_runner, "onch3": onchannel_runner, "domeggook": domeggook_runner, "specialoffer": specialoffer_runner, "domesin": domesin_runner, "namdo": namdo_runner},
+            {"ownerclan": owner_runner, "onch3": onchannel_runner, "domeggook": domeggook_runner, "specialoffer": specialoffer_runner, "domesin": domesin_runner, "namdo": namdo_runner, "cafe_laf": laf_runner},
             clear=True,
         ):
             results = await product_registration.run_sites(
@@ -37,14 +39,15 @@ class ProductRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 on_progress=lambda site, summary: progress.append((site, len(summary))),
             )
 
-        self.assertEqual([result["siteCode"] for result in results], ["ownerclan", "onch3", "domeggook", "specialoffer", "domesin", "namdo"])
+        self.assertEqual([result["siteCode"] for result in results], ["ownerclan", "onch3", "domeggook", "specialoffer", "domesin", "namdo", "cafe_laf"])
         self.assertTrue(results[1]["draftSaved"])
         owner_runner.assert_awaited_once_with(request, request["accounts"][0], preview=True)
         onchannel_runner.assert_awaited_once_with(request, request["accounts"][1], preview=True)
         specialoffer_runner.assert_awaited_once_with(request, request["accounts"][3], preview=True)
         domesin_runner.assert_awaited_once_with(request, request["accounts"][4], preview=True)
         namdo_runner.assert_awaited_once_with(request, request["accounts"][5], preview=True)
-        self.assertEqual(progress, [("ownerclan", 0), (None, 1), ("onch3", 1), (None, 2), ("domeggook", 2), (None, 3), ("specialoffer", 3), (None, 4), ("domesin", 4), (None, 5), ("namdo", 5), (None, 6)])
+        laf_runner.assert_awaited_once_with(request, request["accounts"][6], preview=True)
+        self.assertEqual(progress, [("ownerclan", 0), (None, 1), ("onch3", 1), (None, 2), ("domeggook", 2), (None, 3), ("specialoffer", 3), (None, 4), ("domesin", 4), (None, 5), ("namdo", 5), (None, 6), ("cafe_laf", 6), (None, 7)])
 
     async def test_unsupported_account_is_a_site_failure(self):
         results = await product_registration.run_sites(
