@@ -122,7 +122,7 @@ def is_job_cancelled(job_id: str, task: str) -> bool:
         ).fetchone()
     if not row:
         raise RuntimeError("Job not found.")
-    return row["status"] == "cancelled"
+    return row["status"] not in {"queued", "requested", "running"}
 
 
 def update_job_progress(job_id: str, task: str, result: dict[str, Any]) -> None:
