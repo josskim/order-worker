@@ -68,17 +68,17 @@ INTRANET_INVOICE_UPLOAD_MARK_API_URL = os.getenv(
 )
 SISTER_INVOICE_UPLOAD_API_URL = os.getenv(
     "SISTER_INVOICE_UPLOAD_API_URL",
-    "https://www.prahashop.co.kr/api/seller/invoice-upload",
+    "https://sistershop.co.kr/api/seller/invoice-upload",
 )
 SISTER_INVOICE_UPLOAD_TOKEN = os.getenv("SISTER_INVOICE_UPLOAD_TOKEN", "")
 SISTER_ORDER_EXPORT_API_URL = os.getenv(
     "SISTER_ORDER_EXPORT_API_URL",
-    "https://prahashop.co.kr/api/seller/orders/export",
+    "https://sistershop.co.kr/api/seller/orders/export",
 )
 SISTER_ORDER_EXPORT_TOKEN = os.getenv("SISTER_ORDER_EXPORT_TOKEN", "")
 SISTER_PRODUCT_STATUS_API_URL = os.getenv(
     "SISTER_PRODUCT_STATUS_API_URL",
-    "https://www.prahashop.co.kr/api/internal/product-status",
+    "https://sistershop.co.kr/api/internal/product-status",
 )
 SISTER_PRODUCT_STATUS_TOKEN = os.getenv(
     "SISTER_PRODUCT_STATUS_TOKEN",
