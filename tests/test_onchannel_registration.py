@@ -25,7 +25,7 @@ class OnchannelRegistrationTests(unittest.IsolatedAsyncioTestCase):
 
         page.get_by_role.assert_called_once_with("button", name="Source", exact=True)
         page.locator.assert_called_once_with(".ck-editor textarea:visible")
-        source_button.click.assert_awaited_once()
+        self.assertEqual(source_button.click.await_count, 2)
         source_area.fill.assert_awaited_once_with("<p>detail</p>")
 
     async def test_editor_html_fails_when_source_value_is_not_saved(self):

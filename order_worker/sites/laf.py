@@ -213,13 +213,28 @@ async def _upload_images(page: Page, files: list[Path]) -> None:
     if not files:
         raise RuntimeError("라프에 등록할 이미지가 없습니다.")
     before = await page.locator(".se-component.se-image img.se-image-resource").count()
+    individual = page.get_by_text("개별사진", exact=True)
+    if await individual.is_visible():
+        await individual.click()
+        await individual.wait_for(state="hidden", timeout=10_000)
+        await page.wait_for_function(
+            "expected => document.querySelectorAll('.se-component.se-image img.se-image-resource').length >= expected",
+            arg=before + len(files),
+            timeout=180_000,
+        )
+        return
     async with page.expect_file_chooser(timeout=15_000) as chooser_info:
         await page.locator("button[data-name='image']").click()
     await (await chooser_info.value).set_files([str(file) for file in files])
-    individual = page.get_by_text("개별사진", exact=True)
-    if await individual.is_visible(timeout=3000):
-        await individual.click()
     expected = before + len(files)
+    try:
+        await individual.wait_for(state="visible", timeout=60_000)
+        await individual.click()
+        await individual.wait_for(state="hidden", timeout=10_000)
+    except Exception as exc:
+        inserted = await page.locator(".se-component.se-image img.se-image-resource").count()
+        if inserted < expected:
+            raise RuntimeError("라프 사진 첨부 방식에서 '개별사진'을 선택하지 못했습니다.") from exc
     await page.wait_for_function(
         """expected => {
           const images = Array.from(document.querySelectorAll('.se-component.se-image img.se-image-resource'));

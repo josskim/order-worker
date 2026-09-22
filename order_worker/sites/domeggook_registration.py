@@ -21,6 +21,19 @@ MANAGEMENT_URL = "https://www.domeggook.com/sc/item/lstAll"
 LABELS = {"domeggook": "도매꾹", "Fdomeggook": "F도매꾹"}
 
 
+def _clean_keywords(values: list[Any]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        keyword = re.sub(r"^[^0-9A-Za-z가-힣]+|[^0-9A-Za-z가-힣]+$", "", str(value).strip())[:10]
+        key = keyword.casefold()
+        if not keyword or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(keyword)
+    return cleaned
+
+
 def _account(account_code: str):
     return next((account for account in ACCOUNTS if account[0] == account_code), None)
 
@@ -184,12 +197,13 @@ async def _set_options(page: Page, colors: list[str], sizes: list[str]) -> None:
     for index, (name, values) in enumerate(option_rows):
         await name_fields.nth(index).fill(name)
         await value_fields.nth(index).fill(",".join(values))
-        await price_fields.nth(index).fill("0")
+        await price_fields.nth(index).fill(",".join("0" for _ in values))
     await popup.locator('img[onclick="checkOptType()"]').click()
     await popup.wait_for_timeout(700)
     quantities = popup.locator('input[name="qty[]"]')
-    if await quantities.count() == 0:
-        raise RuntimeError("도매꾹 옵션 조합이 생성되지 않았습니다.")
+    expected = max(1, len(colors)) * max(1, len(sizes))
+    if await quantities.count() != expected:
+        raise RuntimeError(f"도매꾹 옵션 조합이 생성되지 않았습니다. 예상 {expected}개, 실제 {await quantities.count()}개")
     for index in range(await quantities.count()):
         await quantities.nth(index).fill("9999")
     await popup.locator('img[onclick*="endOptSet"]').last.click()
@@ -225,18 +239,24 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
         raise RuntimeError(f"도매꾹 상품등록 화면에 접근하지 못했습니다: {page.url}")
     await page.locator('input[name="market[]"][value="supply"]').check()
     await page.locator('input[name="itemTitle"]').fill(str(account["productName"]))
-    keywords = request.get("keywordItems") or [value.strip() for value in str(request.get("keywords") or "").split(",") if value.strip()]
+    domeggook = request.get("domeggook") or {}
+    raw_keywords = request.get("keywordItems") or [
+        value.strip() for value in str(request.get("keywords") or "").split(",") if value.strip()
+    ]
+    keywords = _clean_keywords(list(raw_keywords))
     keyword_fields = page.locator("input.lKeywordTmp")
     for index, keyword in enumerate(keywords[: await keyword_fields.count()]):
         await keyword_fields.nth(index).fill(str(keyword))
         await keyword_fields.nth(index).press("Tab")
-    await _select_category(page, [str(value) for value in request.get("categoryPath", [])])
+    if not await page.evaluate("module.keywordController.validate()"):
+        raise RuntimeError("도매꾹 키워드 형식이 사이트 검증을 통과하지 못했습니다.")
+    category_path = domeggook.get("categoryPath") or request.get("categoryPath", [])
+    await _select_category(page, [str(value) for value in category_path])
     await _select_text(page, "#lItemCountrySelect1", "수입산")
     await _select_text(page, "#lItemCountrySelect2", "아시아")
     await _select_text(page, "#lItemCountrySelect3", "중국")
     await page.locator(f'input[name="onlyForAdult"][value="{0 if request.get("minorSalesAllowed") else 1}"]').check()
-    domeggook = request.get("domeggook") or {}
-    await page.locator('input[name="itemSize"]').fill(str(domeggook.get("volume") or "0x0x0"))
+    await page.locator('input[name="itemSize"]').fill(str(domeggook.get("volume") or "30x25x5"))
     await page.locator('input[name="itemWeight"]').fill(str(domeggook.get("weightKg") or "0.1"))
     await page.locator('input[name="itemCode"]').fill(str(account["modelName"]))
     await page.locator('input[name="itemCompany"]').fill(str(account["manufacturer"]))
@@ -254,7 +274,7 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
     await _set_prices(page, int(account["supplyPrice"]))
     await _set_options(page, [str(value) for value in request.get("colors", [])], [str(value) for value in request.get("sizes", [])])
     await _set_shipping(page, int(request.get("shipping", {}).get("fee", 3000)))
-    await page.locator('input[name="itemSize"]').fill(str(domeggook.get("volume") or "0x0x0"))
+    await page.locator('input[name="itemSize"]').fill(str(domeggook.get("volume") or "30x25x5"))
     await page.locator('input[name="itemWeight"]').fill(str(domeggook.get("weightKg") or "0.1"))
     caution = page.locator("#lBtnShowSubmitHelp").locator("xpath=preceding::input[@type='checkbox'][1]")
     await caution.check()
@@ -342,8 +362,14 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
                 await _fill_form(page, request, account_payload, image_path)
                 if preview:
                     return {"site": label, "siteCode": site_code, "success": True, "preview": True, "productCode": product_code, "message": "도매꾹 필수값 자동입력 검증 완료(최종 등록 전 중단)"}
-                register = page.get_by_text("상품등록", exact=True)
-                await register.last.click()
+                await page.locator("button.lBtnSubmit").click()
+                try:
+                    await page.wait_for_function("location.pathname !== '/sc/item/regFrm'", timeout=20_000)
+                except Exception:
+                    # Some accounts show an additional native confirmation before navigation.
+                    # The dialog listener accepts it asynchronously, so allow the continuation
+                    # to settle before producing the detailed option-page error below.
+                    await page.wait_for_timeout(2_000)
                 await _finish_option_registration(page, request)
                 if await _already_registered(page, product_code):
                     return {"site": label, "siteCode": site_code, "success": True, "productCode": product_code, "message": f"상품등록 및 상품옵션등록 완료: {product_code}"}

@@ -58,6 +58,10 @@ def _download_images(account: dict[str, Any], target_dir: Path) -> list[Path]:
     paths: list[Path] = []
     for index, item in enumerate(items[:6]):
         file_name = Path(str(item.get("fileName") or f"image-{index + 1}.jpg")).name
+        # The site rejects the valid JPEG extension `.jpeg` even when the
+        # file content is JPEG. Normalize only the upload filename.
+        if Path(file_name).suffix.casefold() == ".jpeg":
+            file_name = f"{Path(file_name).stem}.jpg"
         target = target_dir / f"{index + 1:02d}-{file_name}"
         response = requests.get(str(item["url"]), timeout=45)
         response.raise_for_status()
@@ -140,6 +144,23 @@ async def _verify_form_values(page: Page, request: dict[str, Any], account: dict
         raise RuntimeError(f"{SITE} 상품이미지 첨부 검증 실패: 예상 {image_count}장, 실제 {attached}장")
 
 
+async def _set_prices(page: Page, supply: int, consumer: int) -> None:
+    if supply <= 0 or consumer < supply:
+        raise RuntimeError("스페셜오퍼 공급가격/소비자가를 확인해 주세요.")
+    await page.locator("#supply_price").fill(str(supply))
+    # Blurring supply recalculates the consumer field. Finish that event BEFORE
+    # selecting/replacing consumer text, otherwise fill can append to 34,600.
+    await page.locator("#supply_price").press("Tab")
+    await page.locator("#normal_price").fill(str(consumer))
+    # Tab from normal_price focuses supply_price again; leaving it later would
+    # silently recompute the consumer price a second time. Blur without refocus.
+    await page.locator("#normal_price").blur()
+    for selector, expected in [("#supply_price", supply), ("#normal_price", consumer)]:
+        actual = int((await page.locator(selector).input_value()).replace(",", "") or 0)
+        if actual != expected:
+            raise RuntimeError(f"스페셜오퍼 금액 입력 불일치: {selector} 예상 {expected}, 실제 {actual}")
+
+
 async def _fill_form(
     page: Page,
     request: dict[str, Any],
@@ -151,7 +172,9 @@ async def _fill_form(
         raise RuntimeError(f"{SITE} 상품등록 화면에 접근하지 못했습니다: {page.url}")
 
     specialoffer = request.get("specialoffer") or {}
-    category_path = specialoffer.get("categoryPath") or ["여성의류", "스커트", "롱 스커트"]
+    category_path = specialoffer.get("categoryPath") or request.get("categoryPath") or []
+    if not category_path:
+        raise RuntimeError("스페셜오퍼 상품 카테고리가 없습니다.")
     await _select_category(page, [str(value) for value in category_path])
     await page.locator('input[name="seller_gcode"]').fill(str(account["code"]))
     await page.locator('input[name="gname"]').fill(str(account["productName"]))
@@ -172,9 +195,7 @@ async def _fill_form(
         [str(value) for value in request.get("colors", []) if str(value).strip()],
         [str(value) for value in request.get("sizes", []) if str(value).strip()],
     )
-    await page.locator("#supply_price").fill(str(account["supplyPrice"]))
-    # 공급가격 입력 이벤트가 소비자가를 자동 재계산하므로 소비자가를 마지막에 확정한다.
-    await page.locator("#normal_price").fill(str(specialoffer.get("consumerPrice") or 0))
+    await _set_prices(page, int(account["supplyPrice"]), int(specialoffer.get("consumerPrice") or 0))
     await _select_text(page, 'select[name="sc_type"]', "유료배송")
     await _select_text(page, 'select[name="sc_method"]', "선결제")
     await page.locator('input[name="sc_amt"]').fill(str(specialoffer.get("shippingFee") or 3000))

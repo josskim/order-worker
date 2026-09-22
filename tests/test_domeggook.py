@@ -11,8 +11,17 @@ from order_worker.sites.domeggook import (
     wait_for_action_target,
     wait_for_download_button,
 )
+from order_worker.sites.domeggook_registration import _clean_keywords
 
 KST = timezone(timedelta(hours=9), name="KST")
+
+
+class DomeggookRegistrationTests(unittest.TestCase):
+    def test_clean_keywords_removes_edge_punctuation_and_duplicates(self):
+        self.assertEqual(
+            _clean_keywords([".허리밴딩", " 데님청바지 ", "데님청바지", "***", "12345678901"]),
+            ["허리밴딩", "데님청바지", "1234567890"],
+        )
 
 
 class FakeRow:

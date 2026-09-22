@@ -139,6 +139,9 @@ async def _set_editor_html(page: Page, html: str) -> None:
     saved_html = await source_area.input_value()
     if saved_html != html:
         raise RuntimeError("온채널 Source 입력 영역에 상품상세 이미지 HTML이 반영되지 않았습니다.")
+    # Commit source mode to CKEditor's model before changing to the options tab.
+    await source_button.click()
+    await source_area.wait_for(state="hidden", timeout=5000)
 
 
 async def _fill_basic_form(
@@ -274,7 +277,8 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
                 if preview:
                     return {"site": label, "siteCode": site_code, "success": True, "preview": True, "productCode": product_code, "message": "온채널 필수값 자동입력 검증 완료(임시저장 전 중단)"}
 
-                await _set_editor_html(page, str(request.get("detailHtml") or ""))
+                # The basic-info editor is hidden on the options tab. Its content
+                # was already committed above; opening Source here times out.
                 await page.locator(".btn-temp-save:visible").last.click(no_wait_after=True)
                 await page.wait_for_timeout(2200)
                 if await _draft_exists(page, product_code):
