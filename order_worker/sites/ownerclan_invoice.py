@@ -10,8 +10,8 @@ from order_worker.sites.invoice_utils import download_invoice_export, parse_owne
 
 
 ACCOUNTS = {
-    "ownerclan": ("2010019378", "hare2580@@##", "오너클랜"),
-    "Fownerclan": ("2010024730", "hare2580@@##", "F오너클랜"),
+    "ownerclan": (config.OWNERCLAN_ID, config.OWNERCLAN_PASSWORD, "오너클랜"),
+    "Fownerclan": (config.FOWNERCLAN_ID, config.FOWNERCLAN_PASSWORD, "F오너클랜"),
 }
 
 
@@ -94,6 +94,10 @@ async def submit_shipping_info(page: Page, label: str) -> dict:
 
 async def run_one(site: str, export_type: str, start_date: str, end_date: str, preview: bool = False) -> dict:
     user_id, password, label = ACCOUNTS[site]
+    password = config.require_credential(
+        password,
+        "OWNERCLAN_PASSWORD" if site == "ownerclan" else "FOWNERCLAN_PASSWORD",
+    )
     file_path = download_invoice_export(site, export_type, start_date, end_date)
     print(f"PROGRESS: [{label}] 인트라넷 업로드용 엑셀 다운로드 완료: {file_path}")
 

@@ -31,7 +31,11 @@ async def _stop_loading(page: Page) -> None:
 
 
 async def _login(page: Page, account) -> None:
-    _, user_id, password, label = account
+    site_code, user_id, password, label = account
+    password = config.require_credential(
+        password,
+        "OWNERCLAN_PASSWORD" if site_code == "ownerclan" else "FOWNERCLAN_PASSWORD",
+    )
     print(f"PROGRESS: [{label}] 상품등록 로그인 중...")
     page.set_default_timeout(10000)
     page.set_default_navigation_timeout(10000)

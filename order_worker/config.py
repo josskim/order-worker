@@ -100,6 +100,18 @@ DOMEGGOOK_DOWNLOAD_TIMEOUT_SECONDS = int(
 )
 HEADLESS = os.getenv("ORDER_WORKER_HEADLESS", "1").lower() not in {"0", "false", "no"}
 
+# The primary and F Ownerclan accounts can change passwords independently.
+OWNERCLAN_ID = os.getenv("OWNERCLAN_ID", "2010019378").strip()
+OWNERCLAN_PASSWORD = os.getenv("OWNERCLAN_PASSWORD", "").strip()
+FOWNERCLAN_ID = os.getenv("FOWNERCLAN_ID", "2010024730").strip()
+FOWNERCLAN_PASSWORD = os.getenv("FOWNERCLAN_PASSWORD", "hare2580@@##").strip()
+
+
+def require_credential(value: str, variable_name: str) -> str:
+    if not value:
+        raise RuntimeError(f"{variable_name} 환경변수가 설정되지 않았습니다.")
+    return value
+
 LAF_CAFE_ID = os.getenv("LAF_CAFE_ID", "26667015").strip()
 LAF_CAFE_SLUG = os.getenv("LAF_CAFE_SLUG", "liveprice").strip()
 LAF_CHROME_DEBUG_PORT = int(os.getenv("LAF_CHROME_DEBUG_PORT", "9223"))
