@@ -1,17 +1,48 @@
 """오너클랜 / F오너클랜 주문서 자동 다운로드"""
 import asyncio
 import os
+import time
 from playwright.async_api import async_playwright
 from order_worker import config
 from order_worker.sites.utils import DOWNLOAD_DIR, upload_to_intranet
 
 ACCOUNTS = [
     # (사이트코드, 아이디, 비밀번호, 레이블)
-    ("ownerclan",  "2010019378", "hare2580@@##", "오너클랜"),
-    ("Fownerclan", "2010024730", "hare2580@@##", "F오너클랜"),
+    ("ownerclan", config.OWNERCLAN_ID, config.OWNERCLAN_PASSWORD, "오너클랜"),
+    ("Fownerclan", config.FOWNERCLAN_ID, config.FOWNERCLAN_PASSWORD, "F오너클랜"),
 ]
 
+DOWNLOAD_BUTTON_SELECTORS = (
+    'img[src*="btn_orderexceldown"]',
+    'img[src*="orderexceldown"]',
+    'a[href*="OrderExcel"] img',
+)
+
+
+async def find_download_button(page, timeout_seconds: float = 30.0):
+    """Poll every frame while the legacy order page finishes rendering."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        for frame in page.frames:
+            for selector in DOWNLOAD_BUTTON_SELECTORS:
+                try:
+                    locator = frame.locator(selector).first
+                    if await locator.is_visible():
+                        return frame, locator
+                except Exception:
+                    # Frames can disappear during the site's navigation/reload.
+                    continue
+        await asyncio.sleep(0.5)
+    frame_urls = ", ".join(frame.url for frame in page.frames)
+    raise RuntimeError(
+        f"다운로드 버튼 없음 (url={page.url}, frames={frame_urls or 'none'})"
+    )
+
 async def run_one(site_code, user_id, password, label, page, context):
+    password = config.require_credential(
+        password,
+        "OWNERCLAN_PASSWORD" if site_code == "ownerclan" else "FOWNERCLAN_PASSWORD",
+    )
     print(f"PROGRESS: [{label}] 로그인 중...")
     await page.goto("https://ownerclan.com/vender/login.php")
     await page.wait_for_load_state("domcontentloaded")
@@ -24,20 +55,13 @@ async def run_one(site_code, user_id, password, label, page, context):
     await page.wait_for_load_state("networkidle")
     page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
 
-    target_frame = None
-    for frame in page.frames:
-        try:
-            if await frame.locator('img[src*="btn_orderexceldown"]').count() > 0:
-                target_frame = frame
-                break
-        except:
-            pass
-
-    if not target_frame:
-        return {"site": label, "success": False, "error": "다운로드 버튼 없음"}
+    try:
+        target_frame, download_button = await find_download_button(page)
+    except RuntimeError as exc:
+        return {"site": label, "success": False, "error": str(exc)}
 
     async with page.expect_download(timeout=30000) as dl:
-        await target_frame.locator('img[src*="btn_orderexceldown"]').first.click()
+        await download_button.click()
 
     download = await dl.value
     save_path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
