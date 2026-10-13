@@ -8,6 +8,8 @@ def test_registration_sites_collects_successful_non_preview_sites() -> None:
             "summary": [
                 {"siteCode": "ownerclan", "success": True},
                 {"site": "onchannel", "success": True},
+                {"siteCode": "onch3", "success": True, "draftSaved": True},
+                {"siteCode": "Fonch3", "success": True, "alreadyDraft": True},
                 {"site": "namdo", "success": True, "preview": True},
                 {"site": "domesin", "success": False},
             ],

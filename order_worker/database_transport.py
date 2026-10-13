@@ -150,7 +150,7 @@ def _registration_sites(result: dict[str, Any]) -> tuple[int, list[str]]:
         product_id = 0
     sites: list[str] = []
     for entry in result.get("summary") if isinstance(result.get("summary"), list) else []:
-        if not isinstance(entry, dict) or entry.get("success") is not True or entry.get("preview") is True:
+        if not isinstance(entry, dict) or entry.get("success") is not True or entry.get("preview") is True or entry.get("draftSaved") is True or entry.get("alreadyDraft") is True:
             continue
         site = SITE_MAP.get(str(entry.get("siteCode") or entry.get("site") or ""))
         if site and site not in sites:

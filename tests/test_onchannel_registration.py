@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from order_worker.sites.onchannel_registration import _set_editor_html, _contains_product_code, _matching_product_row
+from order_worker.sites.onchannel_registration import _set_editor_html, _contains_product_code, _matching_product_row, _download_images
 
 
 class OnchannelRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stale_detail_gallery_is_rejected_before_upload(self):
+        payload = {"galleryImages": [
+            {"fileName": "G1_1000_1.jpg", "url": "https://image.prahashop.shop/intra_image/G1/G1_1000_1.jpg"},
+            {"fileName": "G1_1.jpg", "url": "https://image.prahashop.shop/intra_product/G1/G1_1.jpg"},
+        ]}
+        with self.assertRaisesRegex(RuntimeError, "image2"):
+            _download_images(payload, Path("."))
+
     async def test_product_code_requires_exact_boundary(self):
         self.assertTrue(_contains_product_code("G127154_상품명", "G127154"))
         self.assertTrue(_contains_product_code("f007783_V넥", "F007783"))

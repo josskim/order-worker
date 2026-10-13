@@ -56,7 +56,15 @@ async def _login(page: Page, account) -> None:
 
 
 async def _goto(page: Page, url: str) -> None:
-    await page.goto(url, wait_until="domcontentloaded")
+    try:
+        await page.goto(url, wait_until="domcontentloaded")
+    except Exception as exc:
+        if "interrupted by another navigation" not in str(exc):
+            raise
+        # A successful draft-save redirect may still be completing. Retry only
+        # this read-only navigation, never the save request.
+        await page.wait_for_load_state("domcontentloaded")
+        await page.goto(url, wait_until="domcontentloaded")
     await page.wait_for_timeout(700)
     await dismiss_popups(page)
 
@@ -153,6 +161,9 @@ async def _verified_draft_result(page: Page, request: dict[str, Any], account: d
 
 def _download_images(account: dict[str, Any], target_dir: Path) -> list[Path]:
     items = account.get("galleryImages") or [account["mainImage"], *account.get("additionalImages", [])]
+    # Reject stale queued requests that mixed detail images into representative slots.
+    if any("/intra_image/" not in str(item.get("url", "")) or "1000" not in str(item.get("fileName", "")) for item in items[:4]):
+        raise RuntimeError("온채널 대표이미지는 image2의 1000 대표컷만 사용할 수 있습니다. 최신 상품정보로 다시 요청해 주세요.")
     paths: list[Path] = []
     for index, item in enumerate(items[:4]):
         file_name = Path(str(item.get("fileName") or f"image-{index}.jpg")).name
