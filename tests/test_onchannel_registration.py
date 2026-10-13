@@ -3,10 +3,25 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from order_worker.sites.onchannel_registration import _set_editor_html
+from order_worker.sites.onchannel_registration import _set_editor_html, _contains_product_code, _matching_product_row
 
 
 class OnchannelRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_product_code_requires_exact_boundary(self):
+        self.assertTrue(_contains_product_code("G127154_상품명", "G127154"))
+        self.assertTrue(_contains_product_code("f007783_V넥", "F007783"))
+        self.assertFalse(_contains_product_code("G1271540_다른 상품", "G127154"))
+        self.assertFalse(_contains_product_code("FG127154_다른 상품", "G127154"))
+        self.assertFalse(_contains_product_code("상품 목록", ""))
+
+    async def test_page_search_text_without_product_row_is_not_success(self):
+        page = MagicMock()
+        rows = MagicMock()
+        rows.count = AsyncMock(return_value=0)
+        page.locator.return_value.filter.return_value = rows
+        self.assertIsNone(await _matching_product_row(page, "G127154"))
+        page.locator.assert_called_once_with("table tbody tr")
+
     async def test_editor_html_is_entered_through_source_mode(self):
         page = MagicMock()
         source_button = MagicMock()

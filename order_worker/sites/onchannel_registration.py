@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timedelta
+from urllib.parse import urlparse, parse_qs
+from zoneinfo import ZoneInfo
 
 import requests
 from playwright.async_api import Page, async_playwright
@@ -18,6 +22,20 @@ REGISTER_LIST_URL = "https://www.onch3.co.kr/pending_products_management.php"
 REGISTER_URL = "https://www.onch3.co.kr/regist_pending_products.php"
 MANAGEMENT_URL = "https://www.onch3.co.kr/products_management.php"
 LABELS = {"onch3": "온채널", "Fonch3": "F온채널"}
+
+
+def _contains_product_code(text: str, product_code: str) -> bool:
+    return bool(product_code and re.search(rf"(?<![A-Za-z0-9]){re.escape(product_code)}(?![A-Za-z0-9])", text, re.IGNORECASE))
+
+
+async def _matching_product_row(page: Page, product_code: str):
+    # Only actual product rows count, never page headings/search terms.
+    rows = page.locator("table tbody tr").filter(has_text=product_code)
+    for index in range(await rows.count()):
+        row = rows.nth(index)
+        if _contains_product_code(await row.inner_text(), product_code):
+            return row
+    return None
 
 
 def _account(account_code: str):
@@ -65,12 +83,72 @@ async def _registered_product_exists(page: Page, product_code: str) -> bool:
     await page.locator("#searchForm button[type=submit]").click()
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(400)
-    return product_code.casefold() in (await page.locator("body").inner_text()).casefold()
+    return await _matching_product_row(page, product_code) is not None
 
 
 async def _draft_exists(page: Page, product_code: str) -> bool:
-    await _goto(page, f"{REGISTER_LIST_URL}?status=N&regSec=N")
-    return product_code.casefold() in (await page.locator("body").inner_text()).casefold()
+    pending = [f"{REGISTER_LIST_URL}?status=N&regSec=N"]
+    visited: set[str] = set()
+    while pending:
+        if len(visited) >= 50:
+            raise RuntimeError("온채널 임시저장 목록이 50페이지를 초과했습니다. 중복 방지를 위해 직접 확인해 주세요.")
+        url = pending.pop(0)
+        if url in visited:
+            continue
+        visited.add(url)
+        await _goto(page, url)
+        if await _matching_product_row(page, product_code) is not None:
+            return True
+        links = await page.locator('a[href]').evaluate_all("els => els.filter(e => /^\\d+$/.test(e.textContent.trim())).map(e => e.href)")
+        for link in links:
+            parsed = urlparse(link)
+            query = parse_qs(parsed.query)
+            if (parsed.netloc == "www.onch3.co.kr" and parsed.path == "/pending_products_management.php"
+                    and query.get("status", ["N"])[0] == "N" and query.get("regSec", ["N"])[0] == "N"
+                    and link not in visited and link not in pending):
+                pending.append(link)
+    return False
+
+
+async def _verified_draft_result(page: Page, request: dict[str, Any], account: dict[str, Any], already: bool = False) -> dict[str, Any]:
+    code = str(account["code"])
+    row = await _matching_product_row(page, code)
+    if row is None:
+        raise RuntimeError("온채널 임시저장 상품 행을 확인하지 못했습니다.")
+    row_text = await row.inner_text()
+    draft_id = await row.get_by_role("button", name="수정", exact=True).get_attribute("data-id")
+    if not draft_id or not draft_id.isdigit():
+        raise RuntimeError("온채널 임시저장 수정 ID를 확인하지 못했습니다.")
+    url = f"{REGISTER_URL}?id={draft_id}"
+    await _goto(page, url)
+    if await page.locator('input[name="product_jejo_code"]').input_value() != code:
+        raise RuntimeError("온채널 저장된 공급사 코드가 요청 상품과 다릅니다.")
+    if await page.locator('input[name="product_name"]').input_value() != str(account["productName"]):
+        raise RuntimeError("온채널 저장된 상품명이 요청과 다릅니다. 기존 임시저장을 직접 확인해 주세요.")
+    saved_options = await page.locator('input[name$="[option_nm]"]').evaluate_all("els=>els.map(e=>e.value)")
+    requested_options = request.get("options") or [code]
+    normalize = lambda value: re.sub(r"\s+", "", str(value))
+    if sorted(map(normalize, saved_options)) != sorted(map(normalize, requested_options)):
+        raise RuntimeError("온채널 저장된 옵션이 요청과 일치하지 않습니다.")
+    prices = await page.locator('input[name$="[onch_price]"]').evaluate_all("els=>els.map(e=>Number(e.value))")
+    if len(prices) != len(saved_options) or any(price != int(account["supplyPrice"]) for price in prices):
+        raise RuntimeError("온채널 저장된 옵션 공급가가 요청과 다릅니다.")
+    for name in ("product_img", "product_img_550", "product_img_300", "product_img_130"):
+        if not await page.locator(f'input[name="{name}_url"]').input_value():
+            raise RuntimeError(f"온채널 저장된 대표이미지를 확인하지 못했습니다: {name}")
+    expected_images = len(request.get("detailImages") or []) + len(request.get("sizeImages") or [])
+    detail_count = await page.locator(".ck-content img").count()
+    if expected_images and detail_count < expected_images:
+        raise RuntimeError("온채널 저장된 상세페이지 이미지가 누락됐습니다.")
+    site_code = str(account["siteCode"])
+    platform_code = re.search(r"\bCH\d+\b", row_text)
+    registration_date = re.search(r"\b\d{4}-\d{2}-\d{2}\b", row_text)
+    expiry = ((datetime.strptime(registration_date.group(), "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d") + " 23:59 KST") if registration_date else "등록 다음 날 23:59 KST"
+    return {"site": LABELS[site_code], "siteCode": site_code, "success": True, "draftSaved": True,
+            "alreadyDraft": already, "productCode": code, "draftId": draft_id, "draftUrl": url,
+            "siteProductCode": platform_code.group() if platform_code else None, "verified": True,
+            "verifiedAt": datetime.now(ZoneInfo("Asia/Seoul")).isoformat(), "draftExpiresAt": expiry,
+            "message": f"{'기존 임시저장' if already else '임시저장'} 확인 완료: {code} · {platform_code.group() if platform_code else draft_id} · 옵션/가격/이미지 재조회 검증 · {expiry} 자동 삭제 예정(기한 내 직접 승인요청)"}
 
 
 def _download_images(account: dict[str, Any], target_dir: Path) -> list[Path]:
@@ -157,7 +235,13 @@ async def _fill_basic_form(
     await page.locator('input[name="product_supp_sec"][value="1"]').check()
     await page.locator('input[name="product_prd_channel"][value="1"]').check()
     await page.locator('input[name="agree_terms"]').check()
-    await page.get_by_role("button", name="상품 기본 정보 입력").click(no_wait_after=True)
+    agree_button = page.locator("#btn-agree")
+    if await agree_button.count():
+        # October 2026: the tabbed editor became a single section form.
+        await page.locator('input[name="modify_agree_terms"]').check()
+        await agree_button.click()
+    else:
+        await page.get_by_role("button", name="상품 기본 정보 입력").click(no_wait_after=True)
     await page.wait_for_timeout(300)
 
     await _select_category(page, [str(value) for value in request.get("categoryPath", [])])
@@ -227,7 +311,9 @@ async def _fill_basic_form(
 
 
 async def _set_options(page: Page, request: dict[str, Any], account: dict[str, Any]) -> None:
-    await page.get_by_role("button", name="가격/옵션 정보 입력").click(no_wait_after=True)
+    option_tab = page.get_by_role("button", name="가격/옵션 정보 입력")
+    if await option_tab.count():
+        await option_tab.click(no_wait_after=True)
     await page.wait_for_timeout(300)
     options = [str(value).strip() for value in request.get("options", []) if str(value).strip()]
     if not options:
@@ -255,7 +341,6 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
     work_dir = Path(tempfile.mkdtemp(prefix=f"onchannel-register-{site_code}-", dir=config.DOWNLOAD_DIR))
     dialogs: list[str] = []
     try:
-        image_paths = _download_images(account_payload, work_dir)
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=config.HEADLESS)
             context = await browser.new_context()
@@ -271,7 +356,8 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
                 if await _registered_product_exists(page, product_code):
                     return {"site": label, "siteCode": site_code, "success": True, "alreadyRegistered": True, "productCode": product_code, "message": f"이미 등록된 상품입니다: {product_code}"}
                 if await _draft_exists(page, product_code):
-                    return {"site": label, "siteCode": site_code, "success": True, "alreadyDraft": True, "draftSaved": True, "productCode": product_code, "message": f"이미 임시저장된 상품입니다: {product_code}"}
+                    return await _verified_draft_result(page, request, account_payload, already=True)
+                image_paths = await asyncio.to_thread(_download_images, account_payload, work_dir)
                 await _fill_basic_form(page, request, account_payload, image_paths)
                 await _set_options(page, request, account_payload)
                 if preview:
@@ -282,7 +368,7 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
                 await page.locator(".btn-temp-save:visible").last.click(no_wait_after=True)
                 await page.wait_for_timeout(2200)
                 if await _draft_exists(page, product_code):
-                    return {"site": label, "siteCode": site_code, "success": True, "draftSaved": True, "productCode": product_code, "message": f"임시저장 완료: {product_code}"}
+                    return await _verified_draft_result(page, request, account_payload)
                 relevant_dialogs = [message for message in dialogs if "상세페이지에 표시" not in message]
                 raise RuntimeError(" / ".join(relevant_dialogs[-3:]) or "임시저장 후 등록중 목록에서 상품코드를 찾지 못했습니다.")
             finally:
