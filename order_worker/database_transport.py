@@ -8,6 +8,9 @@ from order_worker import config
 
 
 SITE_MAP = {
+    "account1": "jupraha1",
+    "account2": "jupraha2",
+    "sister": "sister",
     "ownerclan": "ownerclan",
     "Fownerclan": "Fownerclan",
     "onch3": "onch3",

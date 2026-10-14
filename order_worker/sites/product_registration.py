@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from order_worker.sites import domeggook_registration, domesin_registration, laf, namdo_registration, onchannel_registration, ownerclan_registration, specialoffer_registration
+from order_worker.sites import domeggook_registration, domesin_registration, laf, namdo_registration, onchannel_registration, ownerclan_registration, specialoffer_registration, sinsang_registration
 
 
 RUNNERS = {
+    "account1": sinsang_registration.run_account,
+    "account2": sinsang_registration.run_account,
     "ownerclan": ownerclan_registration.run_account,
     "Fownerclan": ownerclan_registration.run_account,
     "onch3": onchannel_registration.run_account,
@@ -24,9 +26,11 @@ async def run_sites(
     preview: bool = False,
     on_progress=None,
 ) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = list(request.get("preResults") or [])
     for account in request.get("accounts", []):
         site_code = str(account.get("siteCode") or "")
+        if any(result.get("siteCode") == site_code for result in results):
+            continue
         if on_progress:
             on_progress(site_code, results.copy())
         runner = RUNNERS.get(site_code)

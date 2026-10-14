@@ -7,6 +7,18 @@ from order_worker.sites import product_registration
 
 
 class ProductRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sinsang_dispatch_and_sister_pre_result_are_merged(self):
+        first = AsyncMock(return_value={"siteCode": "account1", "success": True})
+        second = AsyncMock(return_value={"siteCode": "account2", "success": False})
+        sister = {"siteCode": "sister", "success": True, "sisterProductId": 31211}
+        request = {"accounts": [{"siteCode": "account1"}, {"siteCode": "account2"}, {"siteCode": "sister"}], "preResults": [sister]}
+        with patch.dict(product_registration.RUNNERS, {"account1": first, "account2": second}, clear=True):
+            results = await product_registration.run_sites(request)
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0], sister)
+        first.assert_awaited_once()
+        second.assert_awaited_once()
+
     async def test_dispatches_mixed_accounts_in_requested_order(self):
         owner_runner = AsyncMock(return_value={"siteCode": "ownerclan", "success": True})
         onchannel_runner = AsyncMock(return_value={"siteCode": "onch3", "success": True, "draftSaved": True})
