@@ -4,9 +4,17 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from order_worker.sites import product_registration
+from order_worker.sites.ownerclan_registration import _can_register_existing
 
 
 class ProductRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    def test_ownerclan_allows_duplicate_only_when_existing_rows_are_discontinued(self):
+        self.assertTrue(_can_register_existing({"count": 0, "discontinued": 0}))
+        self.assertTrue(_can_register_existing({"count": 1, "discontinued": 1}))
+        self.assertTrue(_can_register_existing({"count": 3, "discontinued": 3}))
+        self.assertFalse(_can_register_existing({"count": 1, "discontinued": 0}))
+        self.assertFalse(_can_register_existing({"count": 2, "discontinued": 1}))
+
     async def test_sinsang_dispatch_and_sister_pre_result_are_merged(self):
         first = AsyncMock(return_value={"siteCode": "account1", "success": True})
         second = AsyncMock(return_value={"siteCode": "account2", "success": False})

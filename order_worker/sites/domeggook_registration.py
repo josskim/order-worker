@@ -19,6 +19,9 @@ from order_worker.sites.domeggook_status import _login
 REGISTER_URL = "https://www.domeggook.com/sc/item/regFrm"
 MANAGEMENT_URL = "https://www.domeggook.com/sc/item/lstAll"
 LABELS = {"domeggook": "도매꾹", "Fdomeggook": "F도매꾹"}
+# 도매꾹 서버는 PHP의 empty() 검증 때문에 문자열 "0"을 비어 있는 값으로
+# 처리한다. 0.0은 같은 숫자값이면서 서버 검증을 통과하는 표현이다.
+ZERO_DIMENSION_VALUE = "0.0"
 
 
 def _clean_keywords(values: list[Any]) -> list[str]:
@@ -119,14 +122,28 @@ def _download_main_image(account: dict[str, Any], target_dir: Path) -> Path:
     return target
 
 
-async def _keep_requested_category(page: Page) -> None:
-    keep = page.get_by_role("button", name="유지하기", exact=True)
+async def _handle_recommended_category(page: Page) -> None:
+    dialog = page.locator("#lDialogSellReg:visible")
     try:
-        await keep.wait_for(state="visible", timeout=10000)
-        await keep.click()
-        await page.locator("#lDialogSellReg").wait_for(state="hidden", timeout=5000)
+        await dialog.wait_for(state="visible", timeout=10000)
     except Exception:
-        pass
+        return
+    change = dialog.get_by_role("button", name="변경하기", exact=True)
+    if await change.count():
+        await change.click()
+        await page.wait_for_timeout(900)
+        await page.evaluate("window.scrollTo(0, 0)")
+        return
+    # 추천 카테고리 안내가 아닌 다른 안내창은 기존 흐름을 유지한다.
+    keep = dialog.get_by_role("button", name="유지하기", exact=True)
+    if await keep.count():
+        await keep.click()
+        await dialog.wait_for(state="hidden", timeout=5000)
+
+
+async def _set_zero_volume_weight(page: Page) -> None:
+    await page.locator('input[name="itemSize"]').fill(ZERO_DIMENSION_VALUE)
+    await page.locator('input[name="itemWeight"]').fill(ZERO_DIMENSION_VALUE)
 
 
 async def _set_detail_html(page: Page, html: str) -> None:
@@ -256,15 +273,14 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
     await _select_text(page, "#lItemCountrySelect2", "아시아")
     await _select_text(page, "#lItemCountrySelect3", "중국")
     await page.locator(f'input[name="onlyForAdult"][value="{0 if request.get("minorSalesAllowed") else 1}"]').check()
-    await page.locator('input[name="itemSize"]').fill("0")
-    await page.locator('input[name="itemWeight"]').fill("0")
+    await _set_zero_volume_weight(page)
     await page.locator('input[name="itemCode"]').fill(str(account["modelName"]))
     await page.locator('input[name="itemCompany"]').fill(str(account["manufacturer"]))
     await page.locator('input[name="itemCustomCode"]').fill(str(account["code"]))
     await page.locator('input[name="itemSafetyCert"][value="0"]').check()
     await page.locator("#lImageNormal").set_input_files(str(image_path))
     await page.wait_for_timeout(700)
-    await _keep_requested_category(page)
+    await _handle_recommended_category(page)
     await _set_detail_html(page, str(request.get("detailHtml") or ""))
     notice = str(request.get("noticeCategory") or "의류")
     notice_label = "패션잡화(모자/벨트/액세서리 등)" if notice == "패션잡화" else notice
@@ -274,8 +290,7 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
     await _set_prices(page, int(account["supplyPrice"]))
     await _set_options(page, [str(value) for value in request.get("colors", [])], [str(value) for value in request.get("sizes", [])])
     await _set_shipping(page, int(request.get("shipping", {}).get("fee", 3000)))
-    await page.locator('input[name="itemSize"]').fill("0")
-    await page.locator('input[name="itemWeight"]').fill("0")
+    await _set_zero_volume_weight(page)
     caution = page.locator("#lBtnShowSubmitHelp").locator("xpath=preceding::input[@type='checkbox'][1]")
     await caution.check()
 

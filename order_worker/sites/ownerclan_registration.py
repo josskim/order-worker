@@ -11,6 +11,7 @@ from playwright.async_api import Page, async_playwright
 
 from order_worker import config
 from order_worker.sites.ownerclan import ACCOUNTS
+from order_worker.sites.ownerclan_status import row_has_remote_status
 
 
 LOGIN_URL = "https://ownerclan.com/vender/login.php"
@@ -61,7 +62,7 @@ async def _goto(page: Page, url: str) -> None:
     await _stop_loading(page)
 
 
-async def _already_registered(page: Page, product_code: str) -> bool:
+async def _registered_product_snapshot(page: Page, product_code: str) -> dict[str, int]:
     await _goto(page, MANAGEMENT_URL)
     search_type = page.locator('select[name="s_check"]:visible').first
     if await search_type.count() == 0:
@@ -74,12 +75,25 @@ async def _already_registered(page: Page, product_code: str) -> bool:
     except Exception:
         pass
     await page.wait_for_timeout(600)
-    rows = page.locator('a[href*="GoPrdinfo"]')
-    count = await rows.count()
-    if count == 0:
-        return False
-    texts = [await rows.nth(index).locator("xpath=ancestor::tr[1]").inner_text() for index in range(count)]
-    return any(product_code.casefold() in text.casefold() for text in texts)
+    links = page.locator('a[href*="GoPrdinfo"]')
+    count = await links.count()
+    matched = 0
+    discontinued = 0
+    for index in range(count):
+        row = links.nth(index).locator("xpath=ancestor::tr[1]")
+        text = await row.inner_text()
+        if product_code.casefold() not in text.casefold():
+            continue
+        matched += 1
+        if await row_has_remote_status(row, "단종"):
+            discontinued += 1
+    return {"count": matched, "discontinued": discontinued}
+
+
+def _can_register_existing(snapshot: dict[str, int]) -> bool:
+    count = int(snapshot.get("count") or 0)
+    discontinued = int(snapshot.get("discontinued") or 0)
+    return count == 0 or discontinued == count
 
 
 async def _select_text(page: Page, selector: str, label: str) -> None:
@@ -149,6 +163,19 @@ async def _set_options(page: Page, colors: list[str], sizes: list[str]) -> None:
         raise RuntimeError("오너클랜 옵션 조합이 본문에 반영되지 않았습니다.")
 
 
+async def _dismiss_warning_overlay(page: Page) -> None:
+    overlay = page.locator("#popupContainer:visible")
+    if await overlay.count() == 0:
+        return
+    confirm = overlay.get_by_text("확인", exact=True)
+    if await confirm.count():
+        await confirm.last.click()
+        try:
+            await overlay.wait_for(state="hidden", timeout=5000)
+        except Exception:
+            pass
+
+
 async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any], image_dir: Path) -> None:
     await _goto(page, REGISTER_URL)
     if await page.locator('input[name="productname"]').count() == 0:
@@ -164,6 +191,7 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
     await page.fill('input[name="model"]', str(account["modelName"]))
     await page.fill("#sellprice", str(request["salePrice"]))
     await page.locator("#tax_mode1").check()
+    await _dismiss_warning_overlay(page)
     await _set_options(page, [str(value) for value in request.get("colors", [])], [str(value) for value in request.get("sizes", [])])
 
     main_path, additional_paths = _download_images(account, image_dir)
@@ -214,8 +242,11 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
             page.on("dialog", lambda dialog: asyncio.create_task(accept_dialog(dialog)))
             try:
                 await _login(page, account)
-                if await _already_registered(page, product_code):
+                before = await _registered_product_snapshot(page, product_code)
+                if not _can_register_existing(before):
                     return {"site": label, "siteCode": site_code, "success": True, "alreadyRegistered": True, "productCode": product_code, "message": f"이미 등록된 상품입니다: {product_code}"}
+                if before["count"]:
+                    print(f"PROGRESS: [{label}] 기존 단종 상품 {product_code} 확인 → 신규 등록 진행...")
                 await _fill_form(page, request, account_payload, work_dir)
                 if preview:
                     return {"site": label, "siteCode": site_code, "success": True, "preview": True, "productCode": product_code, "message": "필수값 자동입력 검증 완료(최종 등록 전 중단)"}
@@ -235,7 +266,8 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
                         pass
                 await page.wait_for_timeout(3000)
                 await _stop_loading(page)
-                if await _already_registered(page, product_code):
+                after = await _registered_product_snapshot(page, product_code)
+                if after["count"] > before["count"]:
                     return {"site": label, "siteCode": site_code, "success": True, "productCode": product_code, "message": f"상품등록 완료: {product_code}"}
                 dialog_text = " / ".join(dialogs[-3:])
                 raise RuntimeError(dialog_text or "등록 후 상품관리에서 모델명을 찾지 못했습니다.")
