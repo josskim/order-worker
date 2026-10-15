@@ -15,6 +15,7 @@ from order_worker.sites.status_utils import ProductNotFound, failed, product_not
 
 MANAGEMENT_URL = "https://ownerclan.com/vender/product_myprd.php"
 LOGIN_URL = "https://ownerclan.com/vender/login.php"
+DISCONTINUED_MESSAGE = "단종 · 재등록 필요"
 
 
 def _normalize(value: str) -> str:
@@ -73,7 +74,56 @@ def option_payload_has_status(raw_payload: str, option_name: str, wanted: str) -
 def row_has_status(row_text: str, wanted: str) -> bool:
     """Match a status cell without treating a product name as the status."""
     wanted_normalized = _normalize(wanted)
-    return any(_normalize(line) == wanted_normalized for line in row_text.splitlines())
+    wanted_compact = re.sub(r"[\s\u200b\ufeff]+", "", wanted_normalized)
+    for line in row_text.splitlines():
+        normalized = _normalize(line)
+        compact = re.sub(r"[\s\u200b\ufeff]+", "", normalized)
+        if compact == wanted_compact:
+            return True
+        # Some Ownerclan layouts include the column label in the cell rather
+        # than exposing the selected status as a standalone line.
+        if re.search(rf"(?:판매|상품)?상태[:：]?{re.escape(wanted_compact)}$", compact):
+            return True
+    return False
+
+
+async def row_has_remote_status(row, wanted: str) -> bool:
+    """Read both rendered text and selected option labels from a product row."""
+    if row_has_status(await row.inner_text(), wanted):
+        return True
+
+    selected_options = row.locator("select option:checked")
+    for index in range(await selected_options.count()):
+        if row_has_status(await selected_options.nth(index).inner_text(), wanted):
+            return True
+
+    # A status rendered through a custom span may not be included in the row's
+    # visible text while a table update is settling. Check common status hooks
+    # as a final fallback, still requiring an exact status value.
+    for selector in ("[data-status]", ".status", ".sale-status", ".product-status"):
+        candidates = row.locator(selector)
+        for index in range(await candidates.count()):
+            candidate = candidates.nth(index)
+            values = [await candidate.inner_text()]
+            data_status = await candidate.get_attribute("data-status")
+            if data_status:
+                values.append(data_status)
+            if any(row_has_status(value, wanted) for value in values):
+                return True
+    return False
+
+
+def discontinued_result(site: str, site_code: str, action: str, product_code: str) -> dict[str, Any]:
+    return {
+        "site": site,
+        "siteCode": site_code,
+        "action": action,
+        "productCode": product_code,
+        "success": False,
+        "discontinued": True,
+        "currentStatus": "단종",
+        "message": DISCONTINUED_MESSAGE,
+    }
 
 
 async def _select_model_search(page: Page) -> None:
@@ -332,9 +382,10 @@ async def option_status(page: Page, product_code: str, option_name: str, account
 
 async def product_status(page: Page, product_code: str, account, preview: bool = False, restock: bool = False) -> dict[str, Any]:
     row, _ = await _search_product(page, product_code, account)
+    if restock and await row_has_remote_status(row, "단종"):
+        site_code, _, _, site = account
+        return discontinued_result(site, site_code, "product-restock", product_code)
     row_text = await row.inner_text()
-    if restock and row_has_status(row_text, "단종"):
-        raise RuntimeError("판매상태가 단종이라 재입고할 수 없습니다. 오너클랜에서 상품을 재등록해 주세요.")
     is_soldout = "품절" in row_text
     if is_soldout != restock:
         return {"success": True, "alreadyProcessed": True, "verified": True}

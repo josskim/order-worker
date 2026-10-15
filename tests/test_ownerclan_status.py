@@ -7,6 +7,7 @@ from order_worker.sites.ownerclan_status import (
     option_payload_has_status,
     option_values_match,
     row_has_status,
+    discontinued_result,
 )
 
 
@@ -39,6 +40,17 @@ def test_row_status_detects_discontinued_cell() -> None:
 
 def test_row_status_does_not_match_status_word_inside_product_name() -> None:
     assert not row_has_status("G126280\n단종 방지 손목보호대\n판매중\n8,800", "단종")
+
+
+def test_row_status_detects_labeled_status_cell() -> None:
+    assert row_has_status("상품명\n판매 상태 : 단종\n8,800", "단종")
+
+
+def test_discontinued_product_returns_explicit_re_registration_result() -> None:
+    result = discontinued_result("오너클랜", "ownerclan", "product-restock", "G126280")
+    assert result["success"] is False
+    assert result["currentStatus"] == "단종"
+    assert result["message"] == "단종 · 재등록 필요"
 
 
 def test_ownerclan_search_uses_model_field() -> None:
