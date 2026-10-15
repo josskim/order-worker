@@ -1,5 +1,8 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from order_worker.sites import ownerclan_status
 
 from order_worker.sites.ownerclan_status import (
     _goto,
@@ -46,11 +49,36 @@ def test_row_status_detects_labeled_status_cell() -> None:
     assert row_has_status("상품명\n판매 상태 : 단종\n8,800", "단종")
 
 
+def test_row_status_detects_live_ownerclan_tab_separated_cells() -> None:
+    for code in ("G126280", "F006893"):
+        row_text = f"\t수정\t\tWCDF016\n\t\t{code}_손목보호대\n{code}_손목보호대\t단종\t\n미적용\n\t8,800"
+        assert row_has_status(row_text, "단종")
+        assert not row_has_status(row_text, "판매중")
+
+
 def test_discontinued_product_returns_explicit_re_registration_result() -> None:
     result = discontinued_result("오너클랜", "ownerclan", "product-restock", "G126280")
     assert result["success"] is False
     assert result["currentStatus"] == "단종"
     assert result["message"] == "단종 · 재등록 필요"
+
+
+def test_live_discontinued_row_does_not_report_already_selling() -> None:
+    for site_code, code in (("ownerclan", "G126280"), ("Fownerclan", "F006893")):
+        row = MagicMock()
+        row.inner_text = AsyncMock(return_value=f"수정\t{code}\n{code}_손목보호대\t단종\t\n미적용")
+        with patch.object(ownerclan_status, "_search_product", AsyncMock(return_value=(row, None))):
+            result = asyncio.run(ownerclan_status.product_status(MagicMock(), code, (site_code, "", "", site_code), restock=True))
+        assert result["success"] is False
+        assert result["message"] == "단종 · 재등록 필요"
+        assert not result.get("alreadyProcessed")
+        row.locator.assert_not_called()
+
+
+def test_unknown_status_cannot_be_reported_as_already_selling() -> None:
+    with patch.object(ownerclan_status, "_search_product", AsyncMock(return_value=(MagicMock(), None))), patch.object(ownerclan_status, "row_has_remote_status", AsyncMock(return_value=False)):
+        with pytest.raises(RuntimeError, match="판매상태를 확인하지 못했습니다"):
+            asyncio.run(ownerclan_status.product_status(MagicMock(), "G126280", ("ownerclan", "", "", "오너클랜"), restock=True))
 
 
 def test_ownerclan_search_uses_model_field() -> None:

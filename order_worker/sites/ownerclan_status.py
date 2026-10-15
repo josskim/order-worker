@@ -75,7 +75,7 @@ def row_has_status(row_text: str, wanted: str) -> bool:
     """Match a status cell without treating a product name as the status."""
     wanted_normalized = _normalize(wanted)
     wanted_compact = re.sub(r"[\s\u200b\ufeff]+", "", wanted_normalized)
-    for line in row_text.splitlines():
+    for line in re.split(r"[\r\n\t]+", row_text):
         normalized = _normalize(line)
         compact = re.sub(r"[\s\u200b\ufeff]+", "", normalized)
         if compact == wanted_compact:
@@ -91,6 +91,10 @@ async def row_has_remote_status(row, wanted: str) -> bool:
     """Read both rendered text and selected option labels from a product row."""
     if row_has_status(await row.inner_text(), wanted):
         return True
+
+    for cell_text in await row.locator(":scope > td").all_text_contents():
+        if row_has_status(cell_text, wanted):
+            return True
 
     selected_options = row.locator("select option:checked")
     for index in range(await selected_options.count()):
@@ -385,12 +389,15 @@ async def product_status(page: Page, product_code: str, account, preview: bool =
     if restock and await row_has_remote_status(row, "단종"):
         site_code, _, _, site = account
         return discontinued_result(site, site_code, "product-restock", product_code)
-    row_text = await row.inner_text()
-    is_soldout = "품절" in row_text
-    if is_soldout != restock:
-        return {"success": True, "alreadyProcessed": True, "verified": True}
+    is_soldout = await row_has_remote_status(row, "품절")
+    is_selling = await row_has_remote_status(row, "판매중")
+    wanted = "판매중" if restock else "품절"
+    if (restock and is_selling) or (not restock and is_soldout):
+        return {"success": True, "alreadyProcessed": True, "verified": True, "currentStatus": wanted}
+    if not (is_soldout or is_selling):
+        raise RuntimeError(f"오너클랜 판매상태를 확인하지 못했습니다: {product_code}")
     if preview:
-        return {"success": True, "preview": True, "currentStatus": "판매중"}
+        return {"success": True, "preview": True, "currentStatus": "품절" if is_soldout else "판매중"}
 
     checkbox = row.locator('input[name="chkprcode"]')
     if await checkbox.count() != 1:
@@ -425,7 +432,10 @@ async def product_status(page: Page, product_code: str, account, preview: bool =
         await page.wait_for_timeout(2500)
 
     verified_row, _ = await _search_product(page, product_code, account)
-    if ("품절" in await verified_row.inner_text()) == restock:
+    if restock and await row_has_remote_status(verified_row, "단종"):
+        site_code, _, _, site = account
+        return discontinued_result(site, site_code, "product-restock", product_code)
+    if not await row_has_remote_status(verified_row, wanted):
         raise RuntimeError(f"오너클랜 상품 상태 저장을 확인하지 못했습니다: {product_code}")
     return {"success": True, "verified": True}
 
