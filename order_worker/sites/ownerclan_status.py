@@ -70,6 +70,12 @@ def option_payload_has_status(raw_payload: str, option_name: str, wanted: str) -
     return False
 
 
+def row_has_status(row_text: str, wanted: str) -> bool:
+    """Match a status cell without treating a product name as the status."""
+    wanted_normalized = _normalize(wanted)
+    return any(_normalize(line) == wanted_normalized for line in row_text.splitlines())
+
+
 async def _select_model_search(page: Page) -> None:
     search_type = page.locator('select[name="s_check"]:visible').first
     await search_type.wait_for(state="visible", timeout=10000)
@@ -327,6 +333,8 @@ async def option_status(page: Page, product_code: str, option_name: str, account
 async def product_status(page: Page, product_code: str, account, preview: bool = False, restock: bool = False) -> dict[str, Any]:
     row, _ = await _search_product(page, product_code, account)
     row_text = await row.inner_text()
+    if restock and row_has_status(row_text, "단종"):
+        raise RuntimeError("판매상태가 단종이라 재입고할 수 없습니다. 오너클랜에서 상품을 재등록해 주세요.")
     is_soldout = "품절" in row_text
     if is_soldout != restock:
         return {"success": True, "alreadyProcessed": True, "verified": True}
