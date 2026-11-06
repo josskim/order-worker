@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from order_worker import config
 from order_worker.sites.domesin import PASSWORD, USER_ID
@@ -19,6 +19,11 @@ SITE_CODE = "domesin"
 LOGIN_URL = "https://www.domesin.com/scm/login.html"
 REGISTER_URL = "https://www.domesin.com/scm/M_item/item_form.html"
 MANAGEMENT_URL = "https://www.domesin.com/scm/M_item/item_list.html"
+CATEGORY_OPTION_TIMEOUT_MS = 12000
+
+
+def _product_name(value: str) -> str:
+    return value.replace("_", " ").replace("[", "").replace("]", "")
 
 
 async def _login(page: Page) -> None:
@@ -38,10 +43,33 @@ async def _goto(page: Page, url: str) -> None:
 
 async def _select_text(page: Page, selector: str, label: str) -> None:
     select = page.locator(selector).first
-    options = await select.locator("option").evaluate_all(
+    option_locator = select.locator("option")
+    options = await option_locator.evaluate_all(
         "els=>els.map(o=>({value:o.value,text:(o.textContent||'').replace(/\\s+/g,' ').trim()}))"
     )
     match = next((item for item in options if item["text"] == label), None)
+    if match is None:
+        # 상위 카테고리를 선택하면 하위 select가 AJAX로 채워진다. 고정된 짧은
+        # sleep만으로 판단하면 네트워크가 조금만 늦어도 실제 항목이 있는데도
+        # 없는 것으로 처리되므로, 정확히 일치하는 option이 나타날 때까지 기다린다.
+        try:
+            await page.wait_for_function(
+                """([selector, label]) => {
+                    const select = document.querySelector(selector);
+                    if (!select) return false;
+                    return Array.from(select.options).some(option =>
+                        (option.textContent || '').replace(/\\s+/g, ' ').trim() === label
+                    );
+                }""",
+                arg=[selector, label],
+                timeout=CATEGORY_OPTION_TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError as exc:
+            raise RuntimeError(f"{SITE} 선택값을 찾지 못했습니다: {label}") from exc
+        options = await option_locator.evaluate_all(
+            "els=>els.map(o=>({value:o.value,text:(o.textContent||'').replace(/\\s+/g,' ').trim()}))"
+        )
+        match = next((item for item in options if item["text"] == label), None)
     if match is None:
         raise RuntimeError(f"{SITE} 선택값을 찾지 못했습니다: {label}")
     await select.select_option(str(match["value"]))
@@ -122,7 +150,23 @@ async def _set_detail_html(page: Page, html: str) -> None:
     await page.evaluate("() => window.CKEDITOR.instances.i_content.updateElement()")
 
 
+async def _set_adult_sale(page: Page, request: dict[str, Any]) -> None:
+    allowed = request.get("minorSalesAllowed")
+    if not isinstance(allowed, bool):
+        raise RuntimeError(f"{SITE} 미성년자 판매 설정을 확인할 수 없습니다.")
+    value = "0" if allowed else "1"
+    choice = page.locator(f'input[type="radio"][name="adult"][value="{value}"]')
+    if await choice.count() != 1:
+        raise RuntimeError(f"{SITE} {'일반상품' if allowed else '성인전용상품'} 설정을 찾지 못했습니다.")
+    await choice.check()
+    if not await choice.is_checked():
+        raise RuntimeError(f"{SITE} 미성년자 판매 설정이 반영되지 않았습니다.")
+
+
 async def _verify_form(page: Page, request: dict[str, Any], account: dict[str, Any]) -> None:
+    allowed = request.get("minorSalesAllowed")
+    if not isinstance(allowed, bool) or not await page.locator(f'input[type="radio"][name="adult"][value="{0 if allowed else 1}"]').is_checked():
+        raise RuntimeError(f"{SITE} 미성년자 판매 설정이 변경되어 등록을 중단했습니다.")
     domesin = request.get("domesin") or {}
     expected = {
         'input[name="cost"]': int(account["supplyPrice"]),
@@ -146,9 +190,10 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
     domesin = request.get("domesin") or {}
     category_path = [str(value) for value in domesin.get("categoryPath") or request.get("categoryPath", [])]
     await _select_category(page, category_path)
-    # 도매의신은 상품명에 밑줄 문자를 허용하지 않는다.
-    product_name = str(account["productName"]).replace("_", " ")
+    # 대괄호 안의 상품명은 보존하고 사이트에서 금지한 문자만 제거한다.
+    product_name = _product_name(str(account["productName"]))
     await page.locator('input[name="iname"]').fill(product_name)
+    await _set_adult_sale(page, request)
     await page.locator('input[name="vender_code"]').fill(str(account["code"]))
     await _select_text(page, 'select[name="c1"]', "해외")
     await _select_text(page, 'select[name="c2"]', "아시아")
