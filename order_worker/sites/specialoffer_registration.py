@@ -1,4 +1,5 @@
 from __future__ import annotations
+from order_worker.category_selection import wait_category_option
 
 import asyncio
 import shutil
@@ -79,6 +80,7 @@ async def _select_category(page: Page, category_path: list[str]) -> None:
     if requested and requested[-1] == "롱스커트":
         requested[-1] = "롱 스커트"
     for selector, label in zip(["#sel_ca1", "#sel_ca2", "#sel_ca3", "#sel_ca4", "#sel_ca5"], requested):
+        await wait_category_option(page, selector, label)
         await _select_text(page, selector, label)
     await page.get_by_role("button", name="카테고리 추가", exact=True).click()
     selected = [text.strip() for text in await page.locator("#sel_ca_id option").all_text_contents()]

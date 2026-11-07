@@ -1,4 +1,5 @@
 from __future__ import annotations
+from order_worker.category_selection import wait_category_option
 
 import asyncio
 import shutil
@@ -113,6 +114,7 @@ async def _select_category(page: Page, category_path: list[str]) -> None:
     selectors = ['select[name="code1"]', 'select[name="code2"]', 'select[name="code3"]', 'select[name="code4"]']
     for selector, label in zip(selectors, category_path):
         if label:
+            await wait_category_option(page, selector, label)
             await _select_text(page, selector, label)
     # 사용자 규칙: 세분류가 실제로 제공되면 첫 번째 값을 반드시 선택한다.
     detail_select = page.locator('select[name="code4"]').first

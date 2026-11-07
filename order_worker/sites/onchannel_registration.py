@@ -1,4 +1,5 @@
 from __future__ import annotations
+from order_worker.category_selection import wait_category_option
 
 import asyncio
 import re
@@ -186,6 +187,7 @@ async def _select_category(page: Page, category_path: list[str]) -> None:
     ]
     for selector, label in zip(selectors, category_path):
         if label:
+            await wait_category_option(page, selector, label)
             await _select_text(page, selector, label)
 
 

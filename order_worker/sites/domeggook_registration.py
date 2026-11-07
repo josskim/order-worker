@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from order_worker import config
 from order_worker.sites.domeggook import ACCOUNTS
@@ -96,7 +96,7 @@ async def _select_shipping_address(page: Page, selector: str, label: str) -> Non
 async def _select_category(page: Page, category_path: list[str]) -> None:
     mapped = ["의류/언더웨어" if value == "패션의류" else value for value in category_path if value]
     for label in mapped:
-        button = page.locator("button.lCategoryBtn", has_text=label)
+        button = page.get_by_role("button", name=label, exact=True).and_(page.locator("button.lCategoryBtn"))
         await button.first.wait_for(state="visible", timeout=10000)
         await button.first.click()
         await page.wait_for_timeout(450)
@@ -122,23 +122,34 @@ def _download_main_image(account: dict[str, Any], target_dir: Path) -> Path:
     return target
 
 
-async def _handle_recommended_category(page: Page) -> None:
+async def _handle_recommended_category(page: Page, timeout: int = 10000) -> None:
     dialog = page.locator("#lDialogSellReg:visible")
     try:
-        await dialog.wait_for(state="visible", timeout=10000)
-    except Exception:
+        await dialog.wait_for(state="visible", timeout=timeout)
+    except PlaywrightTimeoutError:
         return
-    change = dialog.get_by_role("button", name="변경하기", exact=True)
-    if await change.count():
-        await change.click()
-        await page.wait_for_timeout(900)
-        await page.evaluate("window.scrollTo(0, 0)")
-        return
-    # 추천 카테고리 안내가 아닌 다른 안내창은 기존 흐름을 유지한다.
-    keep = dialog.get_by_role("button", name="유지하기", exact=True)
-    if await keep.count():
-        await keep.click()
-        await dialog.wait_for(state="hidden", timeout=5000)
+    # 추천 카테고리 적용 직후 같은 컨테이너에 안전/판매 유의사항이 이어질 수 있다.
+    for _ in range(6):
+        if not await dialog.count():
+            return
+        text = await dialog.inner_text()
+        change = dialog.get_by_role("button", name="변경하기", exact=True)
+        if "추천 카테고리" in text and await change.count():
+            await change.click()
+        elif "안전확인대상" in text or ("주의사항" in text and any(value in text for value in ("상품정보", "상품상세", "상품 상세"))):
+            confirm = dialog.get_by_role("button", name="확인", exact=True)
+            if await confirm.count():
+                await confirm.click()
+            else:
+                close = dialog.locator(".pDialogBtnClose")
+                if not await close.count():
+                    raise RuntimeError(f"도매꾹 안내창의 확인 버튼을 찾지 못했습니다: {text[:300]}")
+                await close.click()
+        else:
+            raise RuntimeError(f"도매꾹 확인이 필요한 안내창: {text[:300]}")
+        await page.wait_for_timeout(600)
+    if await dialog.count():
+        raise RuntimeError("도매꾹 안내창 처리가 완료되지 않았습니다.")
 
 
 async def _set_zero_volume_weight(page: Page) -> None:
@@ -147,6 +158,7 @@ async def _set_zero_volume_weight(page: Page) -> None:
 
 
 async def _set_detail_html(page: Page, html: str) -> None:
+    await _handle_recommended_category(page, timeout=1500)
     async with page.expect_popup(timeout=12000) as popup_info:
         await page.locator("#lBtnWriteItemMemo").click()
     popup = await popup_info.value

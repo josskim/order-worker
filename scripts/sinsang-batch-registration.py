@@ -8,6 +8,7 @@ from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root))
 from sinsang_worker.config import load_config
+from sinsang_worker.browser import operation_login_account
 from sinsang_worker.registration import RegistrationRunner, clean_product_name
 from playwright.async_api import async_playwright
 
@@ -16,7 +17,7 @@ async def main():
     input_data = json.load(sys.stdin)
     request, target = input_data["request"], input_data["account"]
     config = load_config(root / "config.local.json")
-    account = next(item for item in config.accounts if item.name == target["siteCode"])
+    account = operation_login_account(next(item for item in config.accounts if item.name == target["siteCode"]), "registration")
     assets = target["galleryImages"]
     if not assets or len(assets) > 20 or any("/intra_image/" not in item["url"] or "1000" not in item["fileName"] for item in assets):
         raise RuntimeError("신상마켓 일반등록은 image2의 1000 대표컷 1~20장이 필요합니다.")
@@ -24,6 +25,12 @@ async def main():
            "registration_mode": "normal", "registration_title": target["productName"],
            "product": request["sinsangProduct"], "target_accounts": [account.name],
            "max_registration_images": 20, "assets": [{"image_url": item["url"], "target_color": request["sinsangProduct"].get("p_color")} for item in assets]}
+    if request.get("siteCategoryPaths") is not None:
+        path = request.get("categoryPath")
+        if not isinstance(path, list) or len(path) not in (2, 3):
+            raise RuntimeError("신상마켓 카테고리 설정은 실제 2~3단계 경로가 필요합니다.")
+        job["category_root"] = path[0]
+        job["category_path"] = list(path[1:])
     logs = []
     def log(message):
         logs.append(message)

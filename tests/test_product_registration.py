@@ -8,6 +8,17 @@ from order_worker.sites.ownerclan_registration import _can_register_existing
 
 
 class ProductRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exception_keeps_prior_results_and_continues_other_sites(self):
+        good = AsyncMock(return_value={"siteCode": "ownerclan", "success": True})
+        bad = AsyncMock(side_effect=RuntimeError("로그인이 필요합니다"))
+        later = AsyncMock(return_value={"siteCode": "namdo", "success": True})
+        request = {"accounts": [{"siteCode": "ownerclan"}, {"siteCode": "cafe_laf"}, {"siteCode": "namdo"}]}
+        with patch.dict(product_registration.RUNNERS, {"ownerclan": good, "cafe_laf": bad, "namdo": later}, clear=True):
+            results = await product_registration.run_sites(request)
+        self.assertEqual([True, False, True], [item["success"] for item in results])
+        self.assertIn("로그인이 필요", results[1]["error"])
+        later.assert_awaited_once()
+
     def test_ownerclan_allows_duplicate_only_when_existing_rows_are_discontinued(self):
         self.assertTrue(_can_register_existing({"count": 0, "discontinued": 0}))
         self.assertTrue(_can_register_existing({"count": 1, "discontinued": 1}))

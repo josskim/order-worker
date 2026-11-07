@@ -43,7 +43,27 @@ async def run_sites(
                 "error": f"지원하지 않는 상품등록 사이트입니다: {site_code}",
             }
         else:
-            result = await runner(request, account, preview=preview)
+            try:
+                site_request = request
+                confirmed_paths = request.get("siteCategoryPaths")
+                if confirmed_paths is not None:
+                    path = confirmed_paths.get(site_code)
+                    if site_code not in {"sister", "cafe_laf"} and not path:
+                        raise RuntimeError("사이트별 카테고리 설정을 완료해 주세요.")
+                    if path:
+                        site_request = {**request, "categoryPath": list(path)}
+                        section = {"domeggook": "domeggook", "Fdomeggook": "domeggook", "domesin": "domesin", "specialoffer": "specialoffer", "namdo": "namdo"}.get(site_code)
+                        if section:
+                            site_request[section] = {**(request.get(section) or {}), "categoryPath": list(path)}
+                result = await runner(site_request, account, preview=preview)
+            except Exception as exc:
+                result = {
+                    "site": str(account.get("siteLabel") or site_code),
+                    "siteCode": site_code,
+                    "success": False,
+                    "productCode": str(account.get("code") or ""),
+                    "error": str(exc) or type(exc).__name__,
+                }
         results.append(result)
         if on_progress:
             on_progress(None, results.copy())
