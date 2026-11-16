@@ -179,7 +179,15 @@ async def submit_upload(page: Page, expected_count: int | None, dialog_messages:
     except Exception:
         pass
     await page.wait_for_timeout(2000)
-    text = await page.locator("body").inner_text(timeout=10000)
+    # 도매의신은 업로드 처리 후 빈 폼으로 돌아가거나 응답 문서만 반환하는
+    # 경우가 있어 현재 페이지에 body가 없을 수 있다. 이때 body 조회 예외를
+    # 작업 전체 실패로 만들지 말고, 이미 확보한 처리 응답/알림을 기준으로
+    # 결과를 판정한다.
+    try:
+        text = await page.locator("body").inner_text(timeout=10000)
+    except Exception as exc:
+        print(f"PROGRESS: [{LABEL}] 업로드 결과 화면 본문 읽기 실패, 응답 본문으로 판정: {exc}")
+        text = ""
     result = parse_result(
         text,
         expected_count=expected_count,
