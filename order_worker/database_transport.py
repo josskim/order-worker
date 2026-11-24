@@ -212,13 +212,71 @@ def complete_job(job_id: str, task: str, status: str, result: dict[str, Any], er
 
 def next_local_job(tasks: tuple[str, ...]) -> dict[str, Any] | None:
     with connection() as database:
-        return database.execute(
+        # Local jobs and Railway jobs share the same service queue. Reserve a
+        # local job under the same advisory lock used by the intranet queue so
+        # a local dispatcher cannot run beside an active Railway job or skip
+        # an older queued Railway job.
+        candidate = database.execute(
             """
-            SELECT id::text AS id, task
+            SELECT id::text AS id, railway_service_id
             FROM order_worker_jobs
-            WHERE status = 'queued' AND task = ANY(%s)
-            ORDER BY requested_at ASC
+            WHERE status IN ('queued', 'requested') AND task = ANY(%s)
+            ORDER BY requested_at ASC, id ASC
             LIMIT 1
             """,
             (list(tasks),),
         ).fetchone()
+        if not candidate:
+            database.commit()
+            return None
+
+        service_id = str(candidate.get("railway_service_id") or "order-worker:unassigned")
+        database.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (service_id,),
+        )
+        job = database.execute(
+            """
+            SELECT job.id::text AS id, job.task
+            FROM order_worker_jobs AS job
+            WHERE job.id = %s::uuid
+              AND job.status IN ('queued', 'requested')
+              AND job.task = ANY(%s)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_worker_jobs AS busy
+                  WHERE busy.railway_service_id IS NOT DISTINCT FROM job.railway_service_id
+                    AND busy.id <> job.id
+                    AND busy.status IN ('held', 'requested', 'running', 'cancelling')
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_worker_jobs AS earlier
+                  WHERE earlier.railway_service_id IS NOT DISTINCT FROM job.railway_service_id
+                    AND earlier.status = 'queued'
+                    AND (
+                        earlier.requested_at < job.requested_at
+                        OR (earlier.requested_at = job.requested_at AND earlier.id < job.id)
+                    )
+              )
+            LIMIT 1
+            """,
+            (candidate["id"], list(tasks)),
+        ).fetchone()
+        if not job:
+            database.commit()
+            return None
+
+        reserved = database.execute(
+            """
+            UPDATE order_worker_jobs
+            SET status = 'requested', updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s::uuid AND status = 'queued'
+            """,
+            (job["id"],),
+        )
+        if reserved.rowcount not in (0, 1):
+            database.rollback()
+            return None
+        database.commit()
+        return job
