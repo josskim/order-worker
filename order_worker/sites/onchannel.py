@@ -13,6 +13,44 @@ ACCOUNTS = [
     ("Fonch3", "youby74@naver.com",    "hana2580@@", "F온채널"),
 ]
 
+LOGIN_URL = "https://www.onch3.co.kr/login/login_web.php"
+
+
+async def login(page, account):
+    """로그인 화면 변경에 대응해 온채널 계정으로 로그인한다."""
+    _, user_id, password, label = account
+    print(f"PROGRESS: [{label}] 로그인 중...")
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+
+    # 기존 input[name]과 현재 ID 기반 입력란을 모두 지원한다.
+    username = page.locator("#login-username, input[name='username']").first
+    password_input = page.locator("#login-password, input[name='password']").first
+    await username.wait_for(state="visible", timeout=15000)
+    await password_input.wait_for(state="visible", timeout=15000)
+    await username.fill(user_id)
+    await password_input.fill(password)
+
+    # 현재 화면은 button.submit-btn이 아니라 form 내부의 submit 버튼을 사용한다.
+    submit = page.locator(
+        "#form-login button[type='submit'], button[type='submit'], button.submit-btn"
+    ).first
+    await submit.wait_for(state="visible", timeout=15000)
+    await submit.click()
+    try:
+        await page.wait_for_url(lambda url: "/login/" not in url, timeout=30000)
+    except Exception as exc:
+        if "/login/" in page.url:
+            warning = await page.locator(
+                "#login-username-warning, #login-password-warning, .invalid-feedback"
+            ).all_inner_texts()
+            message = " ".join(text.strip() for text in warning if text.strip())
+            detail = f" ({message})" if message else ""
+            raise RuntimeError(f"로그인 실패{detail}") from exc
+        raise
+
+    await page.wait_for_load_state("domcontentloaded")
+    print(f"PROGRESS: [{label}] 로그인 완료")
+
 
 async def dismiss_popups(page):
     """Dismiss event popups that can block the order download modal."""
@@ -66,22 +104,8 @@ async def check_agreement(page):
 
 
 async def run_one(site_code, user_id, password, label, page, context):
-    print(f"PROGRESS: [{label}] 로그인 중...")
-    await page.goto("https://www.onch3.co.kr/login/login_web.php")
-    await page.wait_for_load_state("domcontentloaded")
-
-    # 로그인 - 최신 셀렉터 (username, password, submit-btn)
     try:
-        await page.fill('input[name="username"]', user_id, timeout=10000)
-        await page.fill('input[name="password"]', password, timeout=10000)
-        await page.click('button.submit-btn', timeout=10000)
-        await page.wait_for_load_state("networkidle", timeout=30000)
-        
-        # 로그인 성공 여부 확인 (로그인 페이지에 머물러 있다면 실패)
-        if "login_web.php" in page.url:
-            return {"site": label, "success": False, "error": "로그인 실패 (아이디/비밀번호 확인 필요)"}
-            
-        print(f"PROGRESS: [{label}] 로그인 완료")
+        await login(page, (site_code, user_id, password, label))
     except Exception as e:
         return {"site": label, "success": False, "error": f"로그인 시도 중 오류: {str(e)}"}
 

@@ -6,7 +6,7 @@ from typing import Any
 from playwright.async_api import Page, async_playwright
 
 from order_worker import config
-from order_worker.sites.onchannel import ACCOUNTS
+from order_worker.sites.onchannel import ACCOUNTS, login as login_onchannel
 from order_worker.sites.status_utils import ProductNotFound, failed, normalize, option_matches, product_not_found
 
 SITE = "온채널"
@@ -16,12 +16,7 @@ MANAGEMENT_URL = "https://www.onch3.co.kr/products_management.php"
 
 
 async def _login(page: Page, account) -> None:
-    _, user_id, password, _ = account
-    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-    await page.fill('input[name="username"]', user_id)
-    await page.fill('input[name="password"]', password)
-    await page.click("button.submit-btn")
-    await page.wait_for_url(lambda url: "/login/" not in url, timeout=30000)
+    await login_onchannel(page, account)
 
 
 async def _search(page: Page, product_code: str):

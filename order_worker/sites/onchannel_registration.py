@@ -15,7 +15,7 @@ import requests
 from playwright.async_api import Page, async_playwright
 
 from order_worker import config
-from order_worker.sites.onchannel import ACCOUNTS, dismiss_popups
+from order_worker.sites.onchannel import ACCOUNTS, dismiss_popups, login as login_onchannel
 
 
 LOGIN_URL = "https://www.onch3.co.kr/login/login_web.php"
@@ -44,15 +44,9 @@ def _account(account_code: str):
 
 
 async def _login(page: Page, account) -> None:
-    _, user_id, password, label = account
-    print(f"PROGRESS: [{label}] 상품등록 로그인 중...")
     page.set_default_timeout(12000)
     page.set_default_navigation_timeout(20000)
-    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-    await page.fill('input[name="username"]', user_id)
-    await page.fill('input[name="password"]', password)
-    await page.click("button.submit-btn")
-    await page.wait_for_url(lambda url: "/login/" not in url, timeout=30000)
+    await login_onchannel(page, account)
     await dismiss_popups(page)
 
 

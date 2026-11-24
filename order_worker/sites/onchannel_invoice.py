@@ -8,7 +8,7 @@ from playwright.async_api import Page, async_playwright
 
 from order_worker import config
 from order_worker.sites.invoice_utils import download_invoice_export
-from order_worker.sites.onchannel import dismiss_popups
+from order_worker.sites.onchannel import dismiss_popups, login as login_onchannel
 
 
 ACCOUNTS = {
@@ -18,15 +18,7 @@ ACCOUNTS = {
 
 
 async def login(page: Page, user_id: str, password: str, label: str) -> None:
-    print(f"PROGRESS: [{label}] 로그인 중...")
-    await page.goto("https://www.onch3.co.kr/login/login_web.php")
-    await page.wait_for_load_state("domcontentloaded")
-    await page.fill('input[name="username"]', user_id, timeout=10000)
-    await page.fill('input[name="password"]', password, timeout=10000)
-    await page.click("button.submit-btn", timeout=10000)
-    await page.wait_for_load_state("networkidle", timeout=30000)
-    if "login_web.php" in page.url:
-        raise RuntimeError("로그인 실패")
+    await login_onchannel(page, ("", user_id, password, label))
 
 
 async def set_checked(page: Page, selector: str) -> None:
