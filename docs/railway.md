@@ -48,7 +48,14 @@ Railway evaluates cron schedules in UTC. Korea Standard Time is UTC+9, so subtra
 
 Register production API URLs and tokens in Railway Variables. Do not commit real secrets.
 
+The worker also protects against a missing or stale localhost URL in Railway. When
+Railway runtime variables are present and an intranet URL is blank or points to
+`localhost`, the worker uses `INTRANET_PUBLIC_BASE_URL` (default:
+`https://chowon.prahashop.shop`) for the intranet API routes below. Local runs keep
+using `http://localhost:3001` unless an explicit URL is configured.
+
 ```env
+INTRANET_PUBLIC_BASE_URL=https://chowon.prahashop.shop
 INTRANET_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import
 INTRANET_LOG_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-import/log
 INTRANET_RUN_HISTORY_API_URL=https://YOUR_INTRANET_DOMAIN/api/order-worker/run-history

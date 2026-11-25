@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 
@@ -43,14 +44,44 @@ ARCHIVE_DIR = Path(os.getenv("ORDER_WORKER_ARCHIVE_DIR", RUNTIME_DIR / "archive"
 LOG_DIR = Path(os.getenv("ORDER_WORKER_LOG_DIR", RUNTIME_DIR / "logs"))
 LOCK_FILE = Path(os.getenv("ORDER_WORKER_LOCK_FILE", RUNTIME_DIR / "order-worker.lock"))
 
-INTRANET_API_URL = os.getenv("INTRANET_API_URL", "http://localhost:3001/api/order-import")
-INTRANET_LOG_API_URL = os.getenv("INTRANET_LOG_API_URL", "http://localhost:3001/api/order-import/log")
-INTRANET_RUN_HISTORY_API_URL = os.getenv(
+RAILWAY_RUNTIME = bool(
+    os.getenv("RAILWAY_ENVIRONMENT")
+    or os.getenv("RAILWAY_PROJECT_ID")
+    or os.getenv("RAILWAY_SERVICE_ID")
+)
+INTRANET_PUBLIC_BASE_URL = os.getenv(
+    "INTRANET_PUBLIC_BASE_URL",
+    "https://chowon.prahashop.shop",
+).strip().rstrip("/")
+_LOCAL_INTRANET_URL = re.compile(
+    r"^https?://(?:localhost|127(?:\.\d+){3}|0\.0\.0\.0)(?::\d+)?(?:/|$)",
+    re.IGNORECASE,
+)
+
+
+def _resolve_intranet_url(name: str, path: str, local_default: str) -> str:
+    configured = os.getenv(name, "").strip()
+    if configured and not (RAILWAY_RUNTIME and _LOCAL_INTRANET_URL.match(configured)):
+        return configured.rstrip("/")
+    if RAILWAY_RUNTIME:
+        return f"{INTRANET_PUBLIC_BASE_URL}{path}"
+    return configured or local_default
+
+
+INTRANET_API_URL = _resolve_intranet_url(
+    "INTRANET_API_URL", "/api/order-import", "http://localhost:3001/api/order-import"
+)
+INTRANET_LOG_API_URL = _resolve_intranet_url(
+    "INTRANET_LOG_API_URL", "/api/order-import/log", "http://localhost:3001/api/order-import/log"
+)
+INTRANET_RUN_HISTORY_API_URL = _resolve_intranet_url(
     "INTRANET_RUN_HISTORY_API_URL",
+    "/api/order-worker/run-history",
     "http://localhost:3001/api/order-worker/run-history",
 )
-INTRANET_JOB_API_URL = os.getenv(
+INTRANET_JOB_API_URL = _resolve_intranet_url(
     "INTRANET_JOB_API_URL",
+    "/api/order-worker/jobs/worker",
     "http://localhost:3001/api/order-worker/jobs/worker",
 )
 ORDER_WORKER_RUN_HISTORY_TOKEN = os.getenv("ORDER_WORKER_RUN_HISTORY_TOKEN", "")
@@ -58,12 +89,14 @@ ORDER_WORKER_JOB_ID = os.getenv("ORDER_WORKER_JOB_ID", "")
 ORDER_WORKER_TRANSPORT = os.getenv("ORDER_WORKER_TRANSPORT", "http").strip().lower()
 DIRECT_URL = os.getenv("DIRECT_URL", "").strip()
 ORDER_WORKER_LOCAL_POLL_SECONDS = max(15, int(os.getenv("ORDER_WORKER_LOCAL_POLL_SECONDS", "60")))
-INTRANET_INVOICE_EXPORT_API_URL = os.getenv(
+INTRANET_INVOICE_EXPORT_API_URL = _resolve_intranet_url(
     "INTRANET_INVOICE_EXPORT_API_URL",
+    "/api/invoice-export/file",
     "http://localhost:3001/api/invoice-export/file",
 )
-INTRANET_INVOICE_UPLOAD_MARK_API_URL = os.getenv(
+INTRANET_INVOICE_UPLOAD_MARK_API_URL = _resolve_intranet_url(
     "INTRANET_INVOICE_UPLOAD_MARK_API_URL",
+    "/api/invoice-export/mark-uploaded",
     "http://localhost:3001/api/invoice-export/mark-uploaded",
 )
 SISTER_INVOICE_UPLOAD_API_URL = os.getenv(
