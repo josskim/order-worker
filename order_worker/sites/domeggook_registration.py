@@ -4,6 +4,7 @@ import asyncio
 import re
 import shutil
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -361,6 +362,61 @@ async def _finish_option_registration(page: Page, request: dict[str, Any]) -> No
     await page.wait_for_timeout(1600)
 
 
+async def _submit_and_wait_for_option_page(page: Page, timeout_seconds: float = 30) -> Page:
+    """Submit the product form and return the page containing option registration.
+
+    도매꾹은 계정/화면 상태에 따라 상품등록 결과를 같은 탭, 새 탭, 또는
+    확인 모달 뒤에 보여준다. 기존 구현은 현재 탭의 URL만 기다려서 새 탭이나
+    확인 모달을 놓치고 등록 실패로 처리했다.
+    """
+    submit = page.locator("button.lBtnSubmit:visible").last
+    if await submit.count() == 0:
+        raise RuntimeError("도매꾹 상품등록 버튼을 찾지 못했습니다.")
+
+    new_page_task = asyncio.create_task(page.context.wait_for_event("page", timeout=5000))
+    await submit.click()
+    try:
+        await new_page_task
+    except Exception:
+        # 같은 탭 전환 또는 새 페이지가 없는 정상 흐름이다.
+        pass
+
+    deadline = time.monotonic() + timeout_seconds
+    confirmed = False
+    while time.monotonic() < deadline:
+        for candidate in reversed(page.context.pages):
+            try:
+                if candidate is not page and candidate.url == "about:blank":
+                    continue
+                body = await candidate.locator("body").inner_text()
+                if "상품옵션등록" in body:
+                    return candidate
+            except Exception:
+                continue
+
+        # 상품등록 버튼 클릭 후 HTML 확인창이 뜨는 경우에는 확인을 눌러야
+        # 같은 탭에서 옵션등록 단계로 넘어간다.
+        confirm = page.locator(
+            ".pDialog:visible .pDialogBtnHighlighted:visible, "
+            "#lDialogSellReg:visible .pDialogBtnHighlighted:visible, "
+            ".pDialog:visible button:has-text('확인'):visible"
+        ).last
+        if await confirm.count() and not confirmed:
+            await confirm.click()
+            confirmed = True
+
+        await page.wait_for_timeout(400)
+
+    body = await page.locator("body").inner_text()
+    visible_errors = await page.locator(
+        ".pDialog:visible, #lDialogSellReg:visible, [class*='error']:visible, [id*='error']:visible"
+    ).all_inner_texts()
+    detail = " / ".join(text.strip() for text in visible_errors if text.strip())
+    if detail:
+        raise RuntimeError(f"도매꾹 상품옵션등록 화면으로 이동하지 못했습니다: {detail[:500]}")
+    raise RuntimeError(f"도매꾹 상품옵션등록 화면으로 이동하지 못했습니다: {page.url}")
+
+
 async def run_account(request: dict[str, Any], account_payload: dict[str, Any], preview: bool = False) -> dict[str, Any]:
     site_code = str(account_payload.get("siteCode") or "")
     label = LABELS.get(site_code, site_code)
@@ -389,15 +445,8 @@ async def run_account(request: dict[str, Any], account_payload: dict[str, Any], 
                 await _fill_form(page, request, account_payload, image_path)
                 if preview:
                     return {"site": label, "siteCode": site_code, "success": True, "preview": True, "productCode": product_code, "message": "도매꾹 필수값 자동입력 검증 완료(최종 등록 전 중단)"}
-                await page.locator("button.lBtnSubmit").click()
-                try:
-                    await page.wait_for_function("location.pathname !== '/sc/item/regFrm'", timeout=20_000)
-                except Exception:
-                    # Some accounts show an additional native confirmation before navigation.
-                    # The dialog listener accepts it asynchronously, so allow the continuation
-                    # to settle before producing the detailed option-page error below.
-                    await page.wait_for_timeout(2_000)
-                await _finish_option_registration(page, request)
+                option_page = await _submit_and_wait_for_option_page(page)
+                await _finish_option_registration(option_page, request)
                 if await _already_registered(page, product_code):
                     return {"site": label, "siteCode": site_code, "success": True, "productCode": product_code, "message": f"상품등록 및 상품옵션등록 완료: {product_code}"}
                 raise RuntimeError("등록 후 상품관리에서 공급사상품코드를 찾지 못했습니다.")
