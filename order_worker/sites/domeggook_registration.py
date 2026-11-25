@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
+from playwright.async_api import Frame, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from order_worker import config
 from order_worker.sites.domeggook import ACCOUNTS
@@ -23,6 +23,9 @@ LABELS = {"domeggook": "도매꾹", "Fdomeggook": "F도매꾹"}
 # 도매꾹 서버는 PHP의 empty() 검증 때문에 문자열 "0"을 비어 있는 값으로
 # 처리한다. 0.0은 같은 숫자값이면서 서버 검증을 통과하는 표현이다.
 ZERO_DIMENSION_VALUE = "0.0"
+# 도매꾹은 판매단가 구간의 최소 판매수량을 2개 이상으로 요구한다.
+# 1개로 전송하면 상품등록 버튼을 눌러도 확인창에서 제출이 중단된다.
+DOMEGGOK_MIN_SALE_QUANTITY = 2
 
 
 def _clean_keywords(values: list[Any]) -> list[str]:
@@ -123,7 +126,12 @@ def _download_main_image(account: dict[str, Any], target_dir: Path) -> Path:
     return target
 
 
-async def _handle_recommended_category(page: Page, timeout: int = 10000) -> None:
+async def _handle_recommended_category(
+    page: Page,
+    timeout: int = 10000,
+    *,
+    accept_recommendation: bool = True,
+) -> None:
     dialog = page.locator("#lDialogSellReg:visible")
     try:
         await dialog.wait_for(state="visible", timeout=timeout)
@@ -135,8 +143,14 @@ async def _handle_recommended_category(page: Page, timeout: int = 10000) -> None
             return
         text = await dialog.inner_text()
         change = dialog.get_by_role("button", name="변경하기", exact=True)
-        if "추천 카테고리" in text and await change.count():
-            await change.click()
+        if "추천 카테고리" in text:
+            if accept_recommendation and await change.count():
+                await change.click()
+            else:
+                keep = dialog.get_by_role("button", name="유지하기", exact=True)
+                if not await keep.count():
+                    raise RuntimeError(f"도매꾹 추천 카테고리 유지 버튼을 찾지 못했습니다: {text[:300]}")
+                await keep.click()
         elif "안전확인대상" in text or ("주의사항" in text and any(value in text for value in ("상품정보", "상품상세", "상품 상세"))):
             confirm = dialog.get_by_role("button", name="확인", exact=True)
             if await confirm.count():
@@ -158,8 +172,8 @@ async def _set_zero_volume_weight(page: Page) -> None:
     await page.locator('input[name="itemWeight"]').fill(ZERO_DIMENSION_VALUE)
 
 
-async def _set_detail_html(page: Page, html: str) -> None:
-    await _handle_recommended_category(page, timeout=1500)
+async def _set_detail_html(page: Page, html: str, *, accept_recommendation: bool = True) -> None:
+    await _handle_recommended_category(page, timeout=1500, accept_recommendation=accept_recommendation)
     async with page.expect_popup(timeout=12000) as popup_info:
         await page.locator("#lBtnWriteItemMemo").click()
     popup = await popup_info.value
@@ -192,15 +206,15 @@ async def _set_prices(page: Page, price: int) -> None:
     await page.locator('input[name="market[]"][value="dome"]').check()
     await page.locator('input[name="market[]"][value="supply"]').check()
     await page.evaluate(
-        """price => {
-          module.itemAmtSectionTbl.updateData({idx:0,key:'start',val:'1'});
-          module.itemAmtSectionTbl.updateData({idx:0,key:'amt',val:String(price)});
+        """data => {
+          module.itemAmtSectionTbl.updateData({idx:0,key:'start',val:String(data.minimum)});
+          module.itemAmtSectionTbl.updateData({idx:0,key:'amt',val:String(data.price)});
           module.itemSupplyAmtSectionTbl.updateData({idx:0,key:'start',val:'1'});
-          module.itemSupplyAmtSectionTbl.updateData({idx:0,key:'amt',val:String(price)});
+          module.itemSupplyAmtSectionTbl.updateData({idx:0,key:'amt',val:String(data.price)});
         }""",
-        price,
+        {"price": price, "minimum": DOMEGGOK_MIN_SALE_QUANTITY},
     )
-    if await page.locator("#lUnitQty").input_value() != "1" or await page.locator("#lAmt1").input_value() != str(price):
+    if await page.locator("#lUnitQty").input_value() != str(DOMEGGOK_MIN_SALE_QUANTITY) or await page.locator("#lAmt1").input_value() != str(price):
         raise RuntimeError("도매꾹 판매단가가 전송값에 반영되지 않았습니다.")
     if await page.locator("#lSupplyQty").input_value() != "1" or await page.locator("#lSupplyAmt").input_value() != str(price):
         raise RuntimeError("도매매 판매단가가 전송값에 반영되지 않았습니다.")
@@ -293,8 +307,10 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
     await page.locator('input[name="itemSafetyCert"][value="0"]').check()
     await page.locator("#lImageNormal").set_input_files(str(image_path))
     await page.wait_for_timeout(700)
-    await _handle_recommended_category(page)
-    await _set_detail_html(page, str(request.get("detailHtml") or ""))
+    # 사이트별로 확정한 실제 카테고리가 있으면 도매꾹 AI 추천이 그 값을
+    # 덮어쓰지 않도록 유지한다.
+    await _handle_recommended_category(page, accept_recommendation=False)
+    await _set_detail_html(page, str(request.get("detailHtml") or ""), accept_recommendation=False)
     notice = str(request.get("noticeCategory") or "의류")
     notice_label = "패션잡화(모자/벨트/액세서리 등)" if notice == "패션잡화" else notice
     await _select_text(page, "#lInfoDutySelector", notice_label)
@@ -308,7 +324,7 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
     await caution.check()
 
 
-async def _finish_option_registration(page: Page, request: dict[str, Any]) -> None:
+async def _finish_option_registration(page: Page | Frame, request: dict[str, Any]) -> None:
     await page.wait_for_timeout(1600)
     body = await page.locator("body").inner_text()
     if "상품옵션등록" not in body:
@@ -362,56 +378,56 @@ async def _finish_option_registration(page: Page, request: dict[str, Any]) -> No
     await page.wait_for_timeout(1600)
 
 
-async def _submit_and_wait_for_option_page(page: Page, timeout_seconds: float = 30) -> Page:
-    """Submit the product form and return the page containing option registration.
+async def _submit_and_wait_for_option_page(page: Page, timeout_seconds: float = 30) -> Page | Frame:
+    """Submit the product form and return the frame containing option registration.
 
-    도매꾹은 계정/화면 상태에 따라 상품등록 결과를 같은 탭, 새 탭, 또는
-    확인 모달 뒤에 보여준다. 기존 구현은 현재 탭의 URL만 기다려서 새 탭이나
-    확인 모달을 놓치고 등록 실패로 처리했다.
+    도매꾹은 상품등록 버튼에서 native confirm을 거친 뒤 메인 페이지를
+    이동시키지 않고 ``lFormRegItem`` 폼을 같은 이름의 iframe으로 POST한다.
+    따라서 버튼 클릭 후 URL/새 탭을 기다리지 말고 사이트의 제출 함수를
+    직접 호출한 뒤 모든 프레임의 응답 화면을 확인해야 한다.
     """
     submit = page.locator("button.lBtnSubmit:visible").last
     if await submit.count() == 0:
         raise RuntimeError("도매꾹 상품등록 버튼을 찾지 못했습니다.")
 
-    new_page_task = asyncio.create_task(page.context.wait_for_event("page", timeout=5000))
-    await submit.click()
-    try:
-        await new_page_task
-    except Exception:
-        # 같은 탭 전환 또는 새 페이지가 없는 정상 흐름이다.
-        pass
+    await page.evaluate("() => { window.confirm = () => true; }")
+    submitted = await page.evaluate(
+        """() => {
+            const controller = window.module?.submitController;
+            if (typeof controller?.submit !== 'function') return false;
+            controller.submit();
+            return true;
+        }"""
+    )
+    if not submitted:
+        await submit.click()
 
     deadline = time.monotonic() + timeout_seconds
-    confirmed = False
     while time.monotonic() < deadline:
         for candidate in reversed(page.context.pages):
-            try:
-                if candidate is not page and candidate.url == "about:blank":
+            surfaces: list[Page | Frame] = [candidate, *candidate.frames]
+            for surface in surfaces:
+                try:
+                    if isinstance(surface, Page) and surface is not page and surface.url == "about:blank":
+                        continue
+                    body = await surface.locator("body").inner_text(timeout=800)
+                    if "상품옵션등록" in body:
+                        return surface
+                except Exception:
                     continue
-                body = await candidate.locator("body").inner_text()
-                if "상품옵션등록" in body:
-                    return candidate
-            except Exception:
-                continue
-
-        # 상품등록 버튼 클릭 후 HTML 확인창이 뜨는 경우에는 확인을 눌러야
-        # 같은 탭에서 옵션등록 단계로 넘어간다.
-        confirm = page.locator(
-            ".pDialog:visible .pDialogBtnHighlighted:visible, "
-            "#lDialogSellReg:visible .pDialogBtnHighlighted:visible, "
-            ".pDialog:visible button:has-text('확인'):visible"
-        ).last
-        if await confirm.count() and not confirmed:
-            await confirm.click()
-            confirmed = True
 
         await page.wait_for_timeout(400)
 
-    body = await page.locator("body").inner_text()
-    visible_errors = await page.locator(
-        ".pDialog:visible, #lDialogSellReg:visible, [class*='error']:visible, [id*='error']:visible"
-    ).all_inner_texts()
-    detail = " / ".join(text.strip() for text in visible_errors if text.strip())
+    visible_errors: list[str] = []
+    for candidate in page.context.pages:
+        for surface in [candidate, *candidate.frames]:
+            try:
+                text = await surface.locator("body").inner_text(timeout=800)
+            except Exception:
+                continue
+            if any(marker in text for marker in ("오류", "최소판매수량", "필수", "등록할 수 없습니다")):
+                visible_errors.append(text.strip())
+    detail = " / ".join(dict.fromkeys(text for text in visible_errors if text))
     if detail:
         raise RuntimeError(f"도매꾹 상품옵션등록 화면으로 이동하지 못했습니다: {detail[:500]}")
     raise RuntimeError(f"도매꾹 상품옵션등록 화면으로 이동하지 못했습니다: {page.url}")
