@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import Any, Callable
 from urllib.parse import urljoin
 
-from playwright.async_api import Browser, async_playwright
+from playwright.async_api import Browser, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from order_worker import config
 from order_worker.sites import domeggook_status, domesin_status, laf, namdo_status, ownerclan_status, onchannel_status, specialoffer_status
@@ -83,6 +84,53 @@ def _pair_exists(pairs: list[tuple[str, str]], wanted: tuple[str, str]) -> bool:
     return any(option_matches(label, "/".join(pair)) for pair in pairs)
 
 
+def _rename_option_pair(pair: tuple[str, str], old: str, new: str) -> tuple[str, str]:
+    old_parts = [part.strip() for part in old.split("/") if part.strip()]
+    new_parts = [part.strip() for part in new.split("/") if part.strip()]
+    if len(old_parts) == 1:
+        if normalize(pair[0]) == normalize(old_parts[0]):
+            return new_parts[0] if new_parts else pair[0], pair[1]
+        if normalize(pair[1]) == normalize(old_parts[0]):
+            return pair[0], new_parts[0] if new_parts else pair[1]
+        return pair
+    if len(old_parts) != 2 or not option_matches("/".join(old_parts), "/".join(pair)):
+        return pair
+    if len(new_parts) == 2:
+        return new_parts[0], new_parts[1]
+    if len(new_parts) == 1:
+        return new_parts[0], pair[1]
+    return pair
+
+
+def _renamed_pairs(
+    existing: list[tuple[str, str]],
+    old: str,
+    new: str,
+    site_label: str,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    renamed = [_rename_option_pair(pair, old, new) for pair in existing]
+    changed = [pair for pair, next_pair in zip(existing, renamed) if pair != next_pair]
+    if not changed:
+        raise RuntimeError(f"{site_label}에서 변경할 옵션명을 찾지 못했습니다: {old}")
+    if len({normalize("/".join(pair)) for pair in renamed}) != len(renamed):
+        raise RuntimeError(f"{site_label} 옵션명 변경 후 중복되는 옵션 조합이 생깁니다.")
+    return renamed, changed
+
+
+def _rename_values(changes: dict[str, Any], site_code: str) -> tuple[str, str] | None:
+    key = SITE_KEYS.get(site_code, site_code)
+    sites = {str(value) for value in changes.get("renameOptionSites", [])}
+    if key not in sites:
+        return None
+    old = str(changes.get("renameOptionFrom") or "").strip()
+    new = str(changes.get("renameOptionTo") or "").strip()
+    if not old or not new:
+        raise RuntimeError("변경할 옵션명과 새 옵션명을 모두 입력해 주세요.")
+    if normalize(old) == normalize(new):
+        raise RuntimeError("기존 옵션명과 새 옵션명이 같습니다.")
+    return old, new
+
+
 def _is_product_not_found_error(error: Exception) -> bool:
     return isinstance(error, ProductNotFound) or bool(
         re.search(r"상품(?:코드)?.*(?:검색 결과가 0건|찾지 못했습니다)", str(error))
@@ -114,12 +162,42 @@ async def _ownerclan(browser: Browser, site_code: str, product_code: str, change
         title = _title(changes, site_code)
         price = _price(changes, site_code)
         requested_options = _option_pairs(changes, site_code)
+        rename_pair = _rename_values(changes, site_code)
+        renamed_options = False
+        renamed_existing: list[tuple[str, str]] = []
+        renamed_changed: list[tuple[str, str]] = []
         if title:
             await editor.locator('input[name="productname"]').fill(title)
             applied.append("상품명")
         if price is not None:
             await editor.locator("#sellprice").fill(str(price))
             applied.append("판매금액")
+        if rename_pair:
+            option_page = await ownerclan_status._open_option_editor(editor)
+            first_values = option_page.locator(".opValName1")
+            second_values = option_page.locator(".opValName2")
+            existing = [
+                (
+                    await first_values.nth(index).input_value(),
+                    await second_values.nth(index).input_value() if index < await second_values.count() else "",
+                )
+                for index in range(await first_values.count())
+            ]
+            renamed_existing, renamed_changed = _renamed_pairs(existing, *rename_pair, "오너클랜")
+            applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
+            renamed_options = True
+            if not preview:
+                for index, pair in enumerate(renamed_existing):
+                    if pair == existing[index]:
+                        continue
+                    await first_values.nth(index).fill(pair[0])
+                    if index < await second_values.count():
+                        await second_values.nth(index).fill(pair[1])
+                await option_page.locator('button[onclick*="setupOption"]').click()
+                await editor.wait_for_timeout(500)
+            if option_page is not None and not option_page.is_closed():
+                await option_page.close()
+                option_page = None
         missing_options: list[tuple[str, str]] = []
         if requested_options:
             option_page = await ownerclan_status._open_option_editor(editor)
@@ -157,11 +235,11 @@ async def _ownerclan(browser: Browser, site_code: str, product_code: str, change
                     option_page = None
         if preview:
             return _message(applied, True)
-        if not title and price is None and not missing_options:
+        if not title and price is None and not missing_options and not renamed_options:
             return {**_message(applied, False), "alreadyProcessed": True}
         await editor.locator('a[href*="formSubmit(\'update\')"]').click()
         await page.wait_for_timeout(5000)
-        if missing_options:
+        if missing_options or renamed_options:
             _, verify_link = await ownerclan_status._search_product(page, product_code, account)
             verify_editor = await ownerclan_status._open_editor(page, verify_link)
             try:
@@ -178,6 +256,9 @@ async def _ownerclan(browser: Browser, site_code: str, product_code: str, change
                     ]
                     if any(not _pair_exists(stored, pair) for pair in missing_options):
                         raise RuntimeError("오너클랜 저장 후 새 옵션을 확인하지 못했습니다.")
+                    if renamed_options:
+                        if any(not _pair_exists(stored, pair) for pair in renamed_existing) or any(_pair_exists(stored, pair) for pair in renamed_changed):
+                            raise RuntimeError("오너클랜 저장 후 변경된 옵션명을 확인하지 못했습니다.")
                 finally:
                     if not verify_options.is_closed():
                         await verify_options.close()
@@ -223,11 +304,15 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
         title = _title(changes, site_code)
         price = _price(changes, site_code)
         requested_options = _option_pairs(changes, site_code)
+        rename_pair = _rename_values(changes, site_code)
+        renamed_options = False
+        renamed_existing: list[tuple[str, str]] = []
+        renamed_changed: list[tuple[str, str]] = []
         if title:
             await editor.locator('input[name="product_nm"]').fill(title)
             applied.append("상품명")
         options_tab_open = False
-        if price is not None or requested_options:
+        if price is not None or requested_options or rename_pair:
             await editor.get_by_role("button", name="가격/옵션 정보 입력", exact=True).click(no_wait_after=True)
             await editor.wait_for_timeout(300)
             options_tab_open = True
@@ -242,6 +327,19 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
             for index in range(await price_fields.count()):
                 await price_fields.nth(index).fill(str(price))
             applied.append("공급가")
+        if rename_pair:
+            option_names = editor.locator('input[name^="options["][name$="[option_nm]"]')
+            existing_labels = [await option_names.nth(index).input_value() for index in range(await option_names.count())]
+            existing_pairs = [
+                tuple((part.strip() for part in label.split("/", 1))) if "/" in label else (label.strip(), "")
+                for label in existing_labels
+            ]
+            renamed_existing, renamed_changed = _renamed_pairs(existing_pairs, *rename_pair, "온채널")
+            for index, pair in enumerate(renamed_existing):
+                if pair != existing_pairs[index]:
+                    await option_names.nth(index).fill(" / ".join(part for part in pair if part))
+            applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
+            renamed_options = True
         missing_options: list[tuple[str, str]] = []
         if requested_options:
             option_names = editor.locator('input[name^="options["][name$="[option_nm]"]')
@@ -270,7 +368,7 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
                         raise RuntimeError(f"온채널 새 옵션이 목록에 생성되지 않았습니다: {label}")
         if preview:
             return _message(applied, True)
-        if not title and price is None and not missing_options:
+        if not title and price is None and not missing_options and not renamed_options:
             return {**_message(applied, False), "alreadyProcessed": True}
         basic_step = editor.get_by_role("link", name="기본 정보 입력", exact=True)
         if await basic_step.count():
@@ -312,7 +410,7 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
             raise RuntimeError("온채널 상품 수정 저장 버튼을 찾지 못했습니다.")
         await save.click()
         await editor.wait_for_timeout(1800)
-        if missing_options:
+        if missing_options or renamed_options:
             verify_row = await onchannel_status._search(page, product_code)
             verify_button = verify_row.locator(".btn-modi-product")
             if await verify_button.count() == 0 and await verify_row.locator(".btn-modi-cancel").count():
@@ -332,6 +430,9 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
                 stored = [await verify_names.nth(index).input_value() for index in range(await verify_names.count())]
                 if any(not any(option_matches("/".join(pair), label) for label in stored) for pair in missing_options):
                     raise RuntimeError("온채널 저장 후 새 옵션을 확인하지 못했습니다.")
+                if renamed_options:
+                    if any(not any(option_matches("/".join(pair), label) for label in stored) for pair in renamed_existing) or any(any(option_matches("/".join(pair), label) for label in stored) for pair in renamed_changed):
+                        raise RuntimeError("온채널 저장 후 변경된 옵션명을 확인하지 못했습니다.")
             finally:
                 if not verify_editor.is_closed():
                     await verify_editor.close()
@@ -340,6 +441,110 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
         if editor is not None and not editor.is_closed():
             await editor.close()
         await page.close()
+
+
+async def _rename_domeggook_options(
+    page,
+    row_key: str,
+    old: str,
+    new: str,
+    preview: bool,
+) -> bool:
+    await page.locator('.tui-grid-rside-area .tui-grid-body-area').evaluate("e => e.scrollLeft = 800")
+    await page.wait_for_timeout(350)
+    option_cell = page.locator(f'td[data-row-key="{row_key}"][data-column-name="useOpt"]')
+    if await option_cell.count() != 1:
+        raise RuntimeError("도매꾹 주문옵션 사용여부 칸을 찾지 못했습니다.")
+    async with page.expect_popup(timeout=15000) as popup_info:
+        await option_cell.locator("a").click()
+    popup = await popup_info.value
+    await popup.wait_for_load_state("domcontentloaded")
+    try:
+        value_fields = popup.locator('input[name="optValue[]"]')
+        values = [
+            [part.strip() for part in (await value_fields.nth(index).input_value()).split(",") if part.strip()]
+            for index in range(await value_fields.count())
+        ]
+        if len(values) < 2:
+            raise RuntimeError("도매꾹 상품의 기존 옵션이 색상/사이즈 2단계 형식이 아닙니다.")
+        existing = [(color, size) for color in values[0] for size in values[1]]
+        renamed, changed = _renamed_pairs(existing, old, new, "도매꾹")
+        if preview:
+            return True
+
+        qty_fields = popup.locator('input[name="qty[]"]')
+        status_fields = popup.locator('select[name="hid[]"]')
+        prior = {
+            normalize("/".join(pair)): (
+                await qty_fields.nth(index).input_value() if index < await qty_fields.count() else "9999",
+                await status_fields.nth(index).input_value() if index < await status_fields.count() else "0",
+            )
+            for index, pair in enumerate(existing)
+        }
+        updated_values = [
+            list(dict.fromkeys(pair[index] for pair in renamed))
+            for index in range(2)
+        ]
+        price_fields = popup.locator('input[name="optPrice[]"]')
+        for index, dimension_values in enumerate(updated_values):
+            await value_fields.nth(index).fill(",".join(dimension_values))
+            if index < await price_fields.count():
+                await price_fields.nth(index).fill(",".join("0" for _ in dimension_values))
+        await popup.locator("img[onclick=\"checkOptType()\"]").click()
+        await popup.wait_for_timeout(700)
+        generated = [(color, size) for color in updated_values[0] for size in updated_values[1]]
+        qty_fields = popup.locator('input[name="qty[]"]')
+        status_fields = popup.locator('select[name="hid[]"]')
+        if await qty_fields.count() != len(generated):
+            raise RuntimeError("도매꾹 옵션명 변경 후 옵션 조합 수가 달라졌습니다.")
+        source_by_new = {
+            normalize("/".join(next_pair)): pair
+            for pair, next_pair in zip(existing, renamed)
+        }
+        for index, pair in enumerate(generated):
+            source = source_by_new.get(normalize("/".join(pair)), pair)
+            old_qty, old_status = prior.get(normalize("/".join(source)), ("9999", "0"))
+            await qty_fields.nth(index).fill(old_qty.replace(",", "") or "9999")
+            if index < await status_fields.count():
+                await status_fields.nth(index).select_option(old_status)
+        await popup.locator('img[onclick*="endOptSet"]').last.click()
+        if not popup.is_closed():
+            await popup.wait_for_event("close", timeout=10000)
+    finally:
+        if not popup.is_closed():
+            await popup.close()
+
+    verify_popup = None
+    for attempt in range(3):
+        await page.wait_for_timeout(1200)
+        await page.locator('.tui-grid-rside-area .tui-grid-body-area').evaluate("e => e.scrollLeft = 800")
+        verify_cell = page.locator(f'td[data-row-key="{row_key}"][data-column-name="useOpt"] a')
+        try:
+            await verify_cell.wait_for(state="visible", timeout=10000)
+            async with page.expect_popup(timeout=15000) as verify_info:
+                await verify_cell.click()
+            verify_popup = await verify_info.value
+            break
+        except PlaywrightTimeoutError:
+            if attempt == 2:
+                raise RuntimeError("도매꾹 저장 후 옵션 팝업을 다시 열지 못했습니다.")
+            await page.reload(wait_until="networkidle")
+    if verify_popup is None:
+        raise RuntimeError("도매꾹 저장 후 옵션 팝업을 다시 열지 못했습니다.")
+    try:
+        await verify_popup.wait_for_load_state("domcontentloaded")
+        verify_values = await verify_popup.locator('input[name="optValue[]"]').evaluate_all(
+            "es => es.map(e => e.value.split(',').map(v => v.trim()).filter(Boolean))"
+        )
+        stored = [(color, size) for color in verify_values[0] for size in verify_values[1]] if len(verify_values) >= 2 else []
+        if not any(_pair_exists(stored, pair) for pair in renamed):
+            raise RuntimeError("도매꾹 저장 후 변경된 옵션명을 확인하지 못했습니다.")
+        if any(_pair_exists(stored, pair) for pair in changed):
+            raise RuntimeError("도매꾹 저장 후 기존 옵션명이 남아 있습니다.")
+    finally:
+        if not verify_popup.is_closed():
+            await verify_popup.close()
+    return True
 
 
 async def _domeggook(
@@ -386,6 +591,12 @@ async def _domeggook(
         title = _title(changes, site_code)
         price = _price(changes, site_code)
         requested_options = _option_pairs(changes, site_code)
+        rename_pair = _rename_values(changes, site_code)
+        renamed_options = False
+        if rename_pair:
+            await _rename_domeggook_options(page, row_key, *rename_pair, preview)
+            applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
+            renamed_options = True
         missing_options: list[tuple[str, str]] = []
         if requested_options:
             await page.locator('.tui-grid-rside-area .tui-grid-body-area').evaluate("e => e.scrollLeft = 800")
@@ -469,7 +680,7 @@ async def _domeggook(
         if not title and price is None:
             if preview:
                 return _message(applied, True)
-            if not missing_options:
+            if not missing_options and not renamed_options:
                 return {**_message(applied, False), "alreadyProcessed": True}
             return _message(applied, False)
         await page.goto(f"https://www.domeggook.com/sc/item/editFrm/{item_no}", wait_until="domcontentloaded")
@@ -521,6 +732,10 @@ async def _specialoffer(browser: Browser, site_code: str, product_code: str, cha
         title = _title(changes, site_code)
         price = _price(changes, site_code)
         requested_options = _option_pairs(changes, site_code)
+        rename_pair = _rename_values(changes, site_code)
+        renamed_options = False
+        renamed_existing: list[tuple[str, str]] = []
+        renamed_changed: list[tuple[str, str]] = []
         if title:
             await page.locator('input[name="gname"]').fill(title)
             applied.append("상품명")
@@ -528,16 +743,20 @@ async def _specialoffer(browser: Browser, site_code: str, product_code: str, cha
             await page.locator("#supply_price").fill(str(price))
             applied.append("공급가격")
         missing_options: list[tuple[str, str]] = []
-        if requested_options:
+        if requested_options or rename_pair:
             option_ids = page.locator('#sit_option_frm input[name="opt_id[]"]')
             existing = []
             for index in range(await option_ids.count()):
                 parts = [part.strip() for part in (await option_ids.nth(index).input_value()).split("\x1e")]
                 if len(parts) >= 2:
                     existing.append((parts[0], parts[1]))
+            if rename_pair:
+                renamed_existing, renamed_changed = _renamed_pairs(existing, *rename_pair, "스페셜오퍼")
+                applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
+                renamed_options = True
             missing_options = [pair for pair in requested_options if not _pair_exists(existing, pair)]
             applied.append(f"옵션 {'추가 ' + str(len(missing_options)) + '개' if missing_options else '이미 존재'}")
-            if not preview and missing_options:
+            if not preview and (missing_options or renamed_options):
                 prior: dict[str, tuple[str, str, str]] = {}
                 supplies = page.locator('#sit_option_frm input[name="opt_supply_price[]"]')
                 stocks = page.locator('#sit_option_frm input[name="opt_stock_qty[]"]')
@@ -548,8 +767,12 @@ async def _specialoffer(browser: Browser, site_code: str, product_code: str, cha
                         await stocks.nth(index).input_value(),
                         await uses.nth(index).input_value(),
                     )
-                colors = [part.strip() for part in (await page.locator("#opt1").input_value()).split(",") if part.strip()]
-                sizes = [part.strip() for part in (await page.locator("#opt2").input_value()).split(",") if part.strip()]
+                source_by_new = {
+                    normalize("/".join(next_pair)): pair
+                    for pair, next_pair in zip(existing, renamed_existing or existing)
+                }
+                colors = list(dict.fromkeys(pair[0] for pair in (renamed_existing or existing) + missing_options))
+                sizes = list(dict.fromkeys(pair[1] for pair in (renamed_existing or existing) + missing_options))
                 for color, size in missing_options:
                     if not any(normalize(color) == normalize(value) for value in colors):
                         colors.append(color)
@@ -567,16 +790,17 @@ async def _specialoffer(browser: Browser, site_code: str, product_code: str, cha
                     raise RuntimeError("스페셜오퍼 새 옵션 조합이 예상 개수대로 생성되지 않았습니다.")
                 for index in range(await option_ids.count()):
                     pair = tuple((await option_ids.nth(index).input_value()).split("\x1e")[:2])
-                    old_supply, old_stock, old_use = prior.get(normalize("/".join(pair)), ("0", "9999", "1"))
+                    source = source_by_new.get(normalize("/".join(pair)), pair)
+                    old_supply, old_stock, old_use = prior.get(normalize("/".join(source)), ("0", "9999", "1"))
                     await supplies.nth(index).fill(old_supply.replace(",", "") or "0")
                     await stocks.nth(index).fill(old_stock.replace(",", "") or "9999")
                     await uses.nth(index).select_option(old_use)
         if preview:
             return _message(applied, True)
-        if not title and price is None and not missing_options:
+        if not title and price is None and not missing_options and not renamed_options:
             return {**_message(applied, False), "alreadyProcessed": True}
         if await page.locator("#modify_status").count():
-            if missing_options:
+            if missing_options or renamed_options:
                 choices = await page.locator("#modify_status option").evaluate_all(
                     "es => es.map(e => ({value:e.value, text:(e.textContent || '').trim()}))"
                 )
@@ -606,6 +830,9 @@ async def _specialoffer(browser: Browser, site_code: str, product_code: str, cha
                     stored.append((parts[0], parts[1]))
             if any(not _pair_exists(stored, pair) for pair in missing_options):
                 raise RuntimeError("스페셜오퍼 저장 후 새 옵션을 확인하지 못했습니다.")
+            if renamed_options:
+                if any(not _pair_exists(stored, pair) for pair in renamed_existing) or any(_pair_exists(stored, pair) for pair in renamed_changed):
+                    raise RuntimeError("스페셜오퍼 저장 후 변경된 옵션명을 확인하지 못했습니다.")
         return _message(applied, False)
     finally:
         await page.close()
@@ -622,6 +849,10 @@ async def _domesin(browser: Browser, site_code: str, product_code: str, changes:
         title = _title(changes, site_code).replace("_", " ")
         price = _price(changes, site_code)
         requested_options = _option_pairs(changes, site_code)
+        rename_pair = _rename_values(changes, site_code)
+        renamed_options = False
+        renamed_existing: list[tuple[str, str]] = []
+        renamed_changed: list[tuple[str, str]] = []
         if title:
             await page.locator(f'input[name="iname_{item_id}"]').fill(title)
             applied.append("상품명")
@@ -629,7 +860,7 @@ async def _domesin(browser: Browser, site_code: str, product_code: str, changes:
             await page.locator(f'input[name="cost_{item_id}"]').fill(str(price))
             applied.append("판매가")
         missing_options: list[tuple[str, str]] = []
-        if requested_options:
+        if requested_options or rename_pair:
             async with page.expect_popup(timeout=15000) as popup_info:
                 await page.locator(f'input[onclick="item_option({item_id});"]').click()
             option_page = await popup_info.value
@@ -643,9 +874,18 @@ async def _domesin(browser: Browser, site_code: str, product_code: str, changes:
                 )
                 for index in range(await first.count())
             ]
+            if rename_pair:
+                renamed_existing, renamed_changed = _renamed_pairs(existing, *rename_pair, "도매의신")
+                for index, pair in enumerate(renamed_existing):
+                    if pair != existing[index]:
+                        await first.nth(index).fill(pair[0])
+                        if index < await second.count():
+                            await second.nth(index).fill(pair[1])
+                applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
+                renamed_options = True
             missing_options = [pair for pair in requested_options if not _pair_exists(existing, pair)]
             applied.append(f"옵션 {'추가 ' + str(len(missing_options)) + '개' if missing_options else '이미 존재'}")
-            if not preview and missing_options:
+            if not preview and (missing_options or renamed_options):
                 for color, size in missing_options:
                     before = await first.count()
                     await option_page.locator('input[onclick="add_option();"]').click()
@@ -666,7 +906,7 @@ async def _domesin(browser: Browser, site_code: str, product_code: str, changes:
             if option_page is not None and not option_page.is_closed():
                 await option_page.close()
                 option_page = None
-            if not preview and missing_options:
+            if not preview and (missing_options or renamed_options):
                 async with page.expect_popup(timeout=15000) as verify_info:
                     await page.locator(f'input[onclick="item_option({item_id});"]').click()
                 verify_page = await verify_info.value
@@ -683,13 +923,16 @@ async def _domesin(browser: Browser, site_code: str, product_code: str, changes:
                     ]
                     if any(not _pair_exists(stored, pair) for pair in missing_options):
                         raise RuntimeError("도매의신 저장 후 새 옵션을 확인하지 못했습니다.")
+                    if renamed_options:
+                        if any(not _pair_exists(stored, pair) for pair in renamed_existing) or any(_pair_exists(stored, pair) for pair in renamed_changed):
+                            raise RuntimeError("도매의신 저장 후 변경된 옵션명을 확인하지 못했습니다.")
                 finally:
                     if not verify_page.is_closed():
                         await verify_page.close()
         if preview:
             return _message(applied, True)
         if not title and price is None:
-            if not missing_options:
+            if not missing_options and not renamed_options:
                 return {**_message(applied, False), "alreadyProcessed": True}
             return _message(applied, False)
         await page.locator(f'input[name="iid[]"][value="{item_id}"]').check()
@@ -707,17 +950,137 @@ async def _domesin(browser: Browser, site_code: str, product_code: str, changes:
         await page.close()
 
 
+def _namdo_update_payload(product: dict[str, Any], options: list[dict[str, Any]]) -> dict[str, Any]:
+    images = sorted(product.get("product_images") or [], key=lambda item: int(item.get("sort") or 0))
+    materials = [
+        {
+            "material_name": str(item.get("base_material", {}).get("material_name") or item.get("material_name") or "").strip(),
+            "base_material_id": item.get("base_material_id"),
+        }
+        for item in (product.get("product_materials") or [])
+    ]
+    return {
+        "product_id": product.get("id"),
+        "market_id": product.get("market_id"),
+        "product_code": product.get("product_code"),
+        "product_name": product.get("product_name"),
+        "description": product.get("description") or "",
+        "category_id": product.get("category_id"),
+        "original_price": product.get("original_price"),
+        "price": product.get("price"),
+        "country": product.get("country"),
+        "materials": materials,
+        "minimum_quantity": product.get("minimum_quantity") or 1,
+        "minimum_price": product.get("minimum_price") or 0,
+        "display_type": product.get("display_type"),
+        "main_image": product.get("main_image"),
+        "detail_image_urls": [str(item.get("path")) for item in images if item.get("path")],
+        "content_image_urls": [str(value) for value in (product.get("content_image_urls") or []) if value],
+        "tags": [str(item.get("tag_name") or item) for item in (product.get("product_tags") or []) if str(item.get("tag_name") or item).strip()],
+        "options": options,
+        "is_stock_managed": product.get("is_stock_managed") or False,
+        "is_soldout": product.get("is_soldout") or 0,
+        "color_image_mapping": product.get("color_image_mapping") or [],
+    }
+
+
+async def _rename_namdo_options(
+    page,
+    product: dict[str, Any],
+    headers: dict[str, str],
+    old: str,
+    new: str,
+    preview: bool,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    raw_options = product.get("product_prices") or []
+    existing = [
+        (str(item.get("color_name") or "").strip(), str(item.get("size_name") or "").strip())
+        for item in raw_options
+        if str(item.get("color_name") or "").strip() or str(item.get("size_name") or "").strip()
+    ]
+    renamed, changed = _renamed_pairs(existing, old, new, "남도마켓")
+    if preview:
+        return renamed, changed
+    options = []
+    for item, pair in zip(raw_options, renamed):
+        options.append({
+            "color_name": pair[0],
+            "size_name": pair[1],
+            "option_price": item.get("option_price") or 0,
+            "is_soldout": item.get("is_soldout") or 0,
+            "product_price_id": item.get("id") or item.get("product_price_id"),
+            "base_size_id": item.get("base_size_id"),
+            "option_code": item.get("option_code") or "",
+        })
+    endpoint = f"https://apis.ndmarket.co.kr/v2/products/{product.get('id')}"
+    response = await page.request.fetch(
+        endpoint,
+        method="PUT",
+        headers={**headers, "content-type": "application/json"},
+        data=json.dumps(_namdo_update_payload(product, options), ensure_ascii=False),
+    )
+    if not response.ok:
+        raise RuntimeError(f"남도마켓 옵션명 변경 API가 HTTP {response.status}로 실패했습니다.")
+    verify = await page.request.get(
+        f"{endpoint}?pid={product.get('id')}",
+        headers=headers,
+    )
+    if not verify.ok:
+        raise RuntimeError(f"남도마켓 옵션명 변경 후 재조회가 HTTP {verify.status}로 실패했습니다.")
+    verified_product = (await verify.json()).get("response") or {}
+    verified = [
+        (str(item.get("color_name") or "").strip(), str(item.get("size_name") or "").strip())
+        for item in (verified_product.get("product_prices") or [])
+    ]
+    if any(not _pair_exists(verified, pair) for pair in renamed) or any(_pair_exists(verified, pair) for pair in changed):
+        raise RuntimeError("남도마켓 저장 후 변경된 옵션명을 확인하지 못했습니다.")
+    return renamed, changed
+
+
 async def _namdo(browser: Browser, site_code: str, product_code: str, changes: dict[str, Any], preview: bool) -> dict[str, Any]:
     from order_worker.sites.namdo_registration import _login, _select_colors, _select_sizes
 
     page = await browser.new_page(viewport={"width": 1800, "height": 1200})
+    api_product: dict[str, Any] | None = None
+    api_headers: dict[str, str] = {}
+
+    async def capture_product(response) -> None:
+        nonlocal api_product, api_headers
+        if not re.search(r"/product/\d+\?pid=", response.url):
+            return
+        try:
+            body = await response.json()
+        except Exception:
+            return
+        if isinstance(body, dict) and isinstance(body.get("response"), dict):
+            api_product = body["response"]
+            api_headers = {
+                key: value
+                for key, value in response.request.headers.items()
+                if key.lower() in {"token", "x-device-id", "x-client-type", "x-platform", "x-application-version"}
+            }
+
+    page.on("response", lambda response: asyncio.create_task(capture_product(response)))
     try:
         await _login(page)
         await namdo_status._open_edit(page, product_code)
+        await page.wait_for_timeout(500)
         applied: list[str] = []
         title = _title(changes, site_code)
         price = _price(changes, site_code)
         requested_options = _option_pairs(changes, site_code)
+        rename_pair = _rename_values(changes, site_code)
+        renamed_options = False
+        renamed_existing: list[tuple[str, str]] = []
+        renamed_changed: list[tuple[str, str]] = []
+        if rename_pair:
+            if api_product is None or not api_headers.get("token"):
+                raise RuntimeError("남도마켓 상품 옵션 정보를 불러오지 못했습니다.")
+            renamed_existing, renamed_changed = await _rename_namdo_options(page, api_product, api_headers, *rename_pair, preview)
+            applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
+            renamed_options = True
+            if not preview and (title or price is not None or requested_options):
+                await page.reload(wait_until="networkidle")
         if title:
             await page.get_by_placeholder("상품명 입력 해주세요", exact=True).fill(title)
             applied.append("상품명")
@@ -763,7 +1126,7 @@ async def _namdo(browser: Browser, site_code: str, product_code: str, changes: d
                     await namdo_status._find_option(page, "/".join(pair))
         if preview:
             return _message(applied, True)
-        if not title and price is None and not missing_options:
+        if not title and price is None and not missing_options and not renamed_options:
             return {**_message(applied, False), "alreadyProcessed": True}
         save = page.get_by_role("button", name="수정하기", exact=True)
         if await save.count() != 1:
