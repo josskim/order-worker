@@ -242,7 +242,14 @@ async def _open_option_editor(editor: Page) -> Page:
     except PlaywrightTimeoutError:
         pass
     await _stop_loading(option_page)
-    await option_page.locator("select.opStatus").first.wait_for(state="visible", timeout=12000)
+    deadline = asyncio.get_running_loop().time() + 12
+    while True:
+        ready_fields = option_page.locator("select.opStatus:visible, .opValName1:visible")
+        if await ready_fields.count():
+            break
+        if asyncio.get_running_loop().time() >= deadline:
+            raise RuntimeError("오너클랜 옵션 편집 화면의 옵션 입력 행을 찾지 못했습니다.")
+        await option_page.wait_for_timeout(250)
     option_page.on("dialog", lambda dialog: asyncio.create_task(_accept_dialog(dialog)))
     return option_page
 
