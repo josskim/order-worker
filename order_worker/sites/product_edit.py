@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any, Callable
 from urllib.parse import urljoin
 
@@ -135,6 +136,32 @@ def _is_product_not_found_error(error: Exception) -> bool:
     return isinstance(error, ProductNotFound) or bool(
         re.search(r"상품(?:코드)?.*(?:검색 결과가 0건|찾지 못했습니다)", str(error))
     )
+
+
+async def _click_onchannel_options_step(editor) -> None:
+    """Open the 온채널 price/option step across the site's label variants."""
+    # The edit popup has changed its visible label from "가격/옵션 정보 입력"
+    # to "가격 / 옵션".  Prefer the site's stable navigation target and keep
+    # text fallbacks for older account variants.  Do not require a button role:
+    # the current page renders this step as a div-based sidebar item.
+    label_pattern = re.compile(r"가격.*옵션", re.I)
+    candidates = (
+        editor.locator('.nav-section-item[data-target="sec-option"]'),
+        editor.locator('[data-target="sec-option"]'),
+        editor.locator('[role="tab"], button, a, [role="button"], .section-title').filter(has_text=label_pattern),
+        editor.get_by_text(label_pattern),
+    )
+    deadline = asyncio.get_running_loop().time() + 30
+    while asyncio.get_running_loop().time() < deadline:
+        for candidate in candidates:
+            for index in range(await candidate.count()):
+                target = candidate.nth(index)
+                if await target.is_visible():
+                    await target.click(no_wait_after=True)
+                    await editor.wait_for_timeout(300)
+                    return
+        await editor.wait_for_timeout(250)
+    raise RuntimeError("온채널 상품 수정 화면에서 가격/옵션 정보 입력 단계 버튼을 찾지 못했습니다.")
 
 
 def _message(applied: list[str], preview: bool) -> dict[str, Any]:
@@ -313,8 +340,7 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
             applied.append("상품명")
         options_tab_open = False
         if price is not None or requested_options or rename_pair:
-            await editor.get_by_role("button", name="가격/옵션 정보 입력", exact=True).click(no_wait_after=True)
-            await editor.wait_for_timeout(300)
+            await _click_onchannel_options_step(editor)
             options_tab_open = True
         if price is not None:
             select_all = editor.locator("#allChk")
@@ -334,12 +360,20 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
                 tuple((part.strip() for part in label.split("/", 1))) if "/" in label else (label.strip(), "")
                 for label in existing_labels
             ]
-            renamed_existing, renamed_changed = _renamed_pairs(existing_pairs, *rename_pair, "온채널")
-            for index, pair in enumerate(renamed_existing):
-                if pair != existing_pairs[index]:
-                    await option_names.nth(index).fill(" / ".join(part for part in pair if part))
-            applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
-            renamed_options = True
+            try:
+                renamed_existing, renamed_changed = _renamed_pairs(existing_pairs, *rename_pair, "온채널")
+            except RuntimeError:
+                old_present = any(option_matches(rename_pair[0], label) for label in existing_labels)
+                new_present = any(option_matches(rename_pair[1], label) for label in existing_labels)
+                if old_present or not new_present:
+                    raise
+                applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]} (이미 적용)")
+            else:
+                for index, pair in enumerate(renamed_existing):
+                    if pair != existing_pairs[index]:
+                        await option_names.nth(index).fill(" / ".join(part for part in pair if part))
+                applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
+                renamed_options = True
         missing_options: list[tuple[str, str]] = []
         if requested_options:
             option_names = editor.locator('input[name^="options["][name$="[option_nm]"]')
@@ -394,8 +428,7 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
         if await manufactured.count() and not (await manufactured.input_value()).strip():
             await manufactured.fill("상세페이지참고")
         if options_tab_open:
-            await editor.get_by_role("button", name="가격/옵션 정보 입력", exact=True).click(no_wait_after=True)
-            await editor.wait_for_timeout(250)
+            await _click_onchannel_options_step(editor)
         # The edit popup exposes the action visually as "승인 요청", but its
         # accessibility name is not stable. The site-owned class is the
         # reliable selector on the live form.
@@ -403,8 +436,7 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
         if await save.count() == 0 and not options_tab_open:
             # Title-only edits stay on the basic-information tab, where the
             # final action is rendered but hidden. Move to the second step.
-            await editor.get_by_role("button", name="가격/옵션 정보 입력", exact=True).click(no_wait_after=True)
-            await editor.wait_for_timeout(300)
+            await _click_onchannel_options_step(editor)
             save = editor.locator("button.btn-approve-request:visible").last
         if await save.count() == 0:
             raise RuntimeError("온채널 상품 수정 저장 버튼을 찾지 못했습니다.")
@@ -424,8 +456,7 @@ async def _onchannel(browser: Browser, site_code: str, product_code: str, change
             verify_editor = await popup_info.value
             try:
                 await verify_editor.wait_for_load_state("domcontentloaded")
-                await verify_editor.get_by_role("button", name="가격/옵션 정보 입력", exact=True).click(no_wait_after=True)
-                await verify_editor.wait_for_timeout(300)
+                await _click_onchannel_options_step(verify_editor)
                 verify_names = verify_editor.locator('input[name^="options["][name$="[option_nm]"]')
                 stored = [await verify_names.nth(index).input_value() for index in range(await verify_names.count())]
                 if any(not any(option_matches("/".join(pair), label) for label in stored) for pair in missing_options):
@@ -992,48 +1023,45 @@ async def _rename_namdo_options(
     new: str,
     preview: bool,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    from order_worker.sites.namdo_registration import _select_colors
+
     raw_options = product.get("product_prices") or []
     existing = [
         (str(item.get("color_name") or "").strip(), str(item.get("size_name") or "").strip())
         for item in raw_options
         if str(item.get("color_name") or "").strip() or str(item.get("size_name") or "").strip()
     ]
-    renamed, changed = _renamed_pairs(existing, old, new, "남도마켓")
+    renamed = [_rename_option_pair(pair, old, new) for pair in existing]
+    changed = [pair for pair, next_pair in zip(existing, renamed) if pair != next_pair]
+    if not changed:
+        old_present = any(option_matches(old, "/".join(pair)) for pair in existing)
+        new_present = any(option_matches(new, "/".join(pair)) for pair in existing)
+        if not old_present and new_present:
+            # A previous run may have completed the rename even though the
+            # caller still has the stale source value. Treat the requested
+            # state as already satisfied and avoid a duplicate color.
+            return existing, []
+        raise RuntimeError(f"남도마켓에서 변경할 옵션명을 찾지 못했습니다: {old}")
+    if len(old.split("/")) != 1 or len(new.split("/")) != 1:
+        raise RuntimeError("남도마켓 옵션명 변경은 색상명만 지원합니다.")
+    if any(option_matches(new, "/".join(pair)) for pair in existing):
+        raise RuntimeError(f"남도마켓에 새 옵션명이 이미 있어 중복을 만들지 않았습니다: {new}")
     if preview:
         return renamed, changed
-    options = []
-    for item, pair in zip(raw_options, renamed):
-        options.append({
-            "color_name": pair[0],
-            "size_name": pair[1],
-            "option_price": item.get("option_price") or 0,
-            "is_soldout": item.get("is_soldout") or 0,
-            "product_price_id": item.get("id") or item.get("product_price_id"),
-            "base_size_id": item.get("base_size_id"),
-            "option_code": item.get("option_code") or "",
-        })
-    endpoint = f"https://apis.ndmarket.co.kr/v2/products/{product.get('id')}"
-    response = await page.request.fetch(
-        endpoint,
-        method="PUT",
-        headers={**headers, "content-type": "application/json"},
-        data=json.dumps(_namdo_update_payload(product, options), ensure_ascii=False),
-    )
-    if not response.ok:
-        raise RuntimeError(f"남도마켓 옵션명 변경 API가 HTTP {response.status}로 실패했습니다.")
-    verify = await page.request.get(
-        f"{endpoint}?pid={product.get('id')}",
-        headers=headers,
-    )
-    if not verify.ok:
-        raise RuntimeError(f"남도마켓 옵션명 변경 후 재조회가 HTTP {verify.status}로 실패했습니다.")
-    verified_product = (await verify.json()).get("response") or {}
-    verified = [
-        (str(item.get("color_name") or "").strip(), str(item.get("size_name") or "").strip())
-        for item in (verified_product.get("product_prices") or [])
+    section = page.locator("section#color")
+    old_tag = section.locator(".tag-box").filter(has_text=re.compile(rf"^\s*{re.escape(old)}\s*$")).last
+    if await old_tag.count() != 1:
+        raise RuntimeError(f"남도마켓 현재 색상명을 찾지 못했습니다: {old}")
+    await old_tag.get_by_role("button").click()
+    await page.wait_for_timeout(250)
+    await _select_colors(page, [new])
+    selected = [
+        (await section.locator(".tag-box span").nth(index).inner_text()).strip()
+        for index in range(await section.locator(".tag-box span").count())
+        if await section.locator(".tag-box span").nth(index).is_visible()
     ]
-    if any(not _pair_exists(verified, pair) for pair in renamed) or any(_pair_exists(verified, pair) for pair in changed):
-        raise RuntimeError("남도마켓 저장 후 변경된 옵션명을 확인하지 못했습니다.")
+    if old in selected or new not in selected:
+        raise RuntimeError(f"남도마켓 새 색상 선택을 확인하지 못했습니다: {old} → {new}")
     return renamed, changed
 
 
@@ -1065,6 +1093,24 @@ async def _namdo(browser: Browser, site_code: str, product_code: str, changes: d
         await _login(page)
         await namdo_status._open_edit(page, product_code)
         await page.wait_for_timeout(500)
+        # The edit page can be served from the browser cache when a previous
+        # update was just completed. Refresh the API snapshot before deciding
+        # which option is the current source value, otherwise a valid second
+        # run can still report that the new option does not exist.
+        deadline = asyncio.get_running_loop().time() + 10
+        while api_product is None and asyncio.get_running_loop().time() < deadline:
+            await page.wait_for_timeout(250)
+        if api_product is not None and api_product.get("id") and api_headers.get("token"):
+            product_id = api_product["id"]
+            fresh_url = f"https://apis.ndmarket.co.kr/product/{product_id}?pid={product_id}&refresh={time.time_ns()}"
+            fresh = await page.request.get(
+                fresh_url,
+                headers={**api_headers, "cache-control": "no-cache", "pragma": "no-cache"},
+            )
+            if fresh.ok:
+                fresh_body = await fresh.json()
+                if isinstance(fresh_body, dict) and isinstance(fresh_body.get("response"), dict):
+                    api_product = fresh_body["response"]
         applied: list[str] = []
         title = _title(changes, site_code)
         price = _price(changes, site_code)
@@ -1079,8 +1125,6 @@ async def _namdo(browser: Browser, site_code: str, product_code: str, changes: d
             renamed_existing, renamed_changed = await _rename_namdo_options(page, api_product, api_headers, *rename_pair, preview)
             applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
             renamed_options = True
-            if not preview and (title or price is not None or requested_options):
-                await page.reload(wait_until="networkidle")
         if title:
             await page.get_by_placeholder("상품명 입력 해주세요", exact=True).fill(title)
             applied.append("상품명")
@@ -1137,6 +1181,25 @@ async def _namdo(browser: Browser, site_code: str, product_code: str, changes: d
             await namdo_status._open_edit(page, product_code)
             for pair in missing_options:
                 await namdo_status._find_option(page, "/".join(pair))
+        if renamed_options:
+            # Re-open the saved product and verify the selected color chip.
+            # Namdo's update API can return 200 while canonicalizing the
+            # option list back to its previous value, so the UI state after
+            # a fresh edit page is the source of truth.
+            await namdo_status._open_edit(page, product_code)
+            target_color = str(rename_pair[1]).split("/", 1)[0].strip() if rename_pair else ""
+            source_color = str(rename_pair[0]).split("/", 1)[0].strip() if rename_pair else ""
+            color_section = page.locator("section#color")
+            selected_colors = [
+                (await color_section.locator(".tag-box span").nth(index).inner_text()).strip()
+                for index in range(await color_section.locator(".tag-box span").count())
+                if await color_section.locator(".tag-box span").nth(index).is_visible()
+            ]
+            if normalize(target_color) not in {normalize(value) for value in selected_colors}:
+                raise RuntimeError(f"남도마켓 저장 후 변경된 색상명을 확인하지 못했습니다: {source_color} → {target_color}")
+            if source_color and normalize(source_color) != normalize(target_color):
+                if normalize(source_color) in {normalize(value) for value in selected_colors}:
+                    raise RuntimeError(f"남도마켓 저장 후 기존 색상명이 남아 있습니다: {source_color}")
         return _message(applied, False)
     finally:
         await page.close()
