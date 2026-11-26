@@ -4,7 +4,7 @@ import unittest
 
 from playwright.async_api import async_playwright
 
-from order_worker.sites.domeggook_registration import _handle_recommended_category
+from order_worker.sites.domeggook_registration import _handle_recommended_category, _set_origin
 from order_worker.sites.namdo_registration import MANAGEMENT_URL, _already_registered
 from order_worker.sites.domesin_registration import _select_text, _set_adult_sale
 
@@ -49,6 +49,26 @@ class RegistrationBrowserRegressions(unittest.IsolatedAsyncioTestCase):
     async def test_no_dialog_is_optional(self):
         await self.page.set_content('<button id="lBtnWriteItemMemo">상세정보 작성</button>')
         await _handle_recommended_category(self.page, timeout=100)
+
+    async def test_domeggook_origin_is_copied_to_hidden_submission_field(self):
+        await self.page.set_content('''
+          <input id="lItemCountry" name="itemCountry" type="hidden">
+          <select id="lItemCountrySelect1"><option value="1">수입산</option></select>
+          <select id="lItemCountrySelect2"><option value="4">아시아</option></select>
+          <select id="lItemCountrySelect3"><option value="36">중국</option></select>
+          <script>
+            window.module = {itemCountryController: {
+              validate: () => {
+                document.querySelector('#lItemCountry').value = [1, 2, 3]
+                  .map((_, i) => document.querySelector(`#lItemCountrySelect${i + 1}`).selectedOptions[0].text)
+                  .join('_');
+                return true;
+              }
+            }};
+          </script>
+        ''')
+        await _set_origin(self.page)
+        self.assertEqual(await self.page.locator('#lItemCountry').input_value(), '수입산_아시아_중국')
 
     async def test_namdo_search_waits_for_actual_row_and_rejects_other_code_prefix(self):
         await self.page.route(MANAGEMENT_URL, lambda route: route.fulfill(content_type='text/html; charset=utf-8', body='''

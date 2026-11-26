@@ -26,6 +26,7 @@ ZERO_DIMENSION_VALUE = "0.0"
 # 도매꾹은 판매단가 구간의 최소 판매수량을 2개 이상으로 요구한다.
 # 1개로 전송하면 상품등록 버튼을 눌러도 확인창에서 제출이 중단된다.
 DOMEGGOK_MIN_SALE_QUANTITY = 2
+DOMEGGOK_ORIGIN = ("수입산", "아시아", "중국")
 
 
 def _clean_keywords(values: list[Any]) -> list[str]:
@@ -172,6 +173,18 @@ async def _set_zero_volume_weight(page: Page) -> None:
     await page.locator('input[name="itemWeight"]').fill(ZERO_DIMENSION_VALUE)
 
 
+async def _set_origin(page: Page) -> None:
+    for index, text in enumerate(DOMEGGOK_ORIGIN, start=1):
+        await _select_text(page, f"#lItemCountrySelect{index}", text)
+    validated = await page.evaluate(
+        "() => typeof module?.itemCountryController?.validate === 'function' && module.itemCountryController.validate()"
+    )
+    expected = "_".join(DOMEGGOK_ORIGIN)
+    actual = await page.locator("#lItemCountry").input_value()
+    if not validated or actual != expected:
+        raise RuntimeError(f"도매꾹 원산지 전송값이 설정되지 않았습니다: {actual or '빈 값'}")
+
+
 async def _set_detail_html(page: Page, html: str, *, accept_recommendation: bool = True) -> None:
     await _handle_recommended_category(page, timeout=1500, accept_recommendation=accept_recommendation)
     async with page.expect_popup(timeout=12000) as popup_info:
@@ -296,9 +309,7 @@ async def _fill_form(page: Page, request: dict[str, Any], account: dict[str, Any
         raise RuntimeError("도매꾹 키워드 형식이 사이트 검증을 통과하지 못했습니다.")
     category_path = domeggook.get("categoryPath") or request.get("categoryPath", [])
     await _select_category(page, [str(value) for value in category_path])
-    await _select_text(page, "#lItemCountrySelect1", "수입산")
-    await _select_text(page, "#lItemCountrySelect2", "아시아")
-    await _select_text(page, "#lItemCountrySelect3", "중국")
+    await _set_origin(page)
     await page.locator(f'input[name="onlyForAdult"][value="{0 if request.get("minorSalesAllowed") else 1}"]').check()
     await _set_zero_volume_weight(page)
     await page.locator('input[name="itemCode"]').fill(str(account["modelName"]))
