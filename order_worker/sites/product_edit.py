@@ -499,7 +499,17 @@ async def _rename_domeggook_options(
         if len(values) < 2:
             raise RuntimeError("도매꾹 상품의 기존 옵션이 색상/사이즈 2단계 형식이 아닙니다.")
         existing = [(color, size) for color in values[0] for size in values[1]]
-        renamed, changed = _renamed_pairs(existing, old, new, "도매꾹")
+        try:
+            renamed, changed = _renamed_pairs(existing, old, new, "도매꾹")
+        except RuntimeError:
+            old_present = any(option_matches(old, "/".join(pair)) for pair in existing)
+            new_present = any(option_matches(new, "/".join(pair)) for pair in existing)
+            if old_present or not new_present:
+                raise
+            # A previous submission may already have saved the target value.
+            # Report it as an idempotent success and do not rebuild the option
+            # matrix, which could reset quantities or display states.
+            return False
         if preview:
             return True
 
@@ -625,9 +635,9 @@ async def _domeggook(
         rename_pair = _rename_values(changes, site_code)
         renamed_options = False
         if rename_pair:
-            await _rename_domeggook_options(page, row_key, *rename_pair, preview)
-            applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}")
-            renamed_options = True
+            changed = await _rename_domeggook_options(page, row_key, *rename_pair, preview)
+            applied.append(f"옵션명 {rename_pair[0]} → {rename_pair[1]}{' (이미 적용)' if not changed else ''}")
+            renamed_options = changed
         missing_options: list[tuple[str, str]] = []
         if requested_options:
             await page.locator('.tui-grid-rside-area .tui-grid-body-area').evaluate("e => e.scrollLeft = 800")

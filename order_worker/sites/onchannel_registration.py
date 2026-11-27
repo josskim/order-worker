@@ -213,6 +213,34 @@ async def _keep_requested_category(page: Page) -> None:
         pass
 
 
+async def _load_notice_fields(page: Page, notice_label: str) -> None:
+    """Select the notice category and wait for its dynamic fields to render."""
+    await _select_text(page, "#onch_sel_cate", notice_label)
+    # F온채널 occasionally receives the change event before the notice AJAX
+    # handler is ready. Re-run the page-owned loader and wait for the first
+    # category-specific field instead of filling it on a fixed 400ms delay.
+    await page.evaluate(
+        """() => {
+            if (typeof window.notificationLoad === 'function') {
+                window.notificationLoad();
+            }
+        }"""
+    )
+    required_fields = (
+        'input[name="main_mat"]',
+        'input[name="prd_color"]',
+        'input[name="prd_meas"]',
+        'input[name="make_import"]',
+        'input[name="make_con"]',
+        'input[name="as_phone"]',
+    )
+    for selector in required_fields:
+        try:
+            await page.locator(selector).first.wait_for(state="visible", timeout=12000)
+        except Exception as exc:
+            raise RuntimeError(f"온채널 상품정보고시 동적 입력란을 불러오지 못했습니다: {selector}") from exc
+
+
 async def _set_editor_html(page: Page, html: str) -> None:
     source_button = page.get_by_role("button", name="Source", exact=True).first
     await source_button.wait_for(state="visible", timeout=12000)
@@ -289,8 +317,7 @@ async def _fill_basic_form(
 
     notice = str(request.get("noticeCategory") or "의류")
     notice_label = "패션잡화(모자/벨트/액세서리)" if notice == "패션잡화" else notice
-    await _select_text(page, "#onch_sel_cate", notice_label)
-    await page.wait_for_timeout(400)
+    await _load_notice_fields(page, notice_label)
     notice_values = onchannel.get("notice") or {}
     await page.locator('input[name="main_mat"]').fill(str(notice_values.get("material") or "폴리혼방"))
     await _select_text(page, 'select[name="kc_type"]', str(notice_values.get("kcType") or "해당사항없음"))
