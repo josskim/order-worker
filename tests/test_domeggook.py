@@ -11,7 +11,7 @@ from order_worker.sites.domeggook import (
     wait_for_action_target,
     wait_for_download_button,
 )
-from order_worker.sites.domeggook_registration import _clean_keywords
+from order_worker.sites.domeggook_registration import _clean_keywords, _minimum_sale_quantity
 
 KST = timezone(timedelta(hours=9), name="KST")
 
@@ -22,6 +22,13 @@ class DomeggookRegistrationTests(unittest.TestCase):
             _clean_keywords([".허리밴딩", " 데님청바지 ", "데님청바지", "***", "12345678901"]),
             ["허리밴딩", "데님청바지", "1234567890"],
         )
+
+    def test_minimum_sale_quantity_is_two_at_or_below_5000(self):
+        self.assertEqual(_minimum_sale_quantity(5000), 2)
+        self.assertEqual(_minimum_sale_quantity(4999), 2)
+
+    def test_minimum_sale_quantity_is_one_above_5000(self):
+        self.assertEqual(_minimum_sale_quantity(5001), 1)
 
 
 class FakeRow:

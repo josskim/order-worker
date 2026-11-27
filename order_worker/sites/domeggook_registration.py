@@ -23,9 +23,8 @@ LABELS = {"domeggook": "도매꾹", "Fdomeggook": "F도매꾹"}
 # 도매꾹 서버는 PHP의 empty() 검증 때문에 문자열 "0"을 비어 있는 값으로
 # 처리한다. 0.0은 같은 숫자값이면서 서버 검증을 통과하는 표현이다.
 ZERO_DIMENSION_VALUE = "0.0"
-# 도매꾹은 판매단가 구간의 최소 판매수량을 2개 이상으로 요구한다.
-# 1개로 전송하면 상품등록 버튼을 눌러도 확인창에서 제출이 중단된다.
-DOMEGGOK_MIN_SALE_QUANTITY = 2
+# 도매꾹·F도매꾹은 판매금액이 낮은 상품만 최소 2개 구매로 등록한다.
+MIN_SALE_QUANTITY_THRESHOLD = 5000
 DOMEGGOK_ORIGIN = ("수입산", "아시아", "중국")
 
 
@@ -40,6 +39,11 @@ def _clean_keywords(values: list[Any]) -> list[str]:
         seen.add(key)
         cleaned.append(keyword)
     return cleaned
+
+
+def _minimum_sale_quantity(price: int) -> int:
+    """Return the marketplace minimum quantity for a selling price."""
+    return 2 if int(price) <= MIN_SALE_QUANTITY_THRESHOLD else 1
 
 
 def _account(account_code: str):
@@ -216,6 +220,7 @@ async def _set_detail_html(page: Page, html: str, *, accept_recommendation: bool
 
 
 async def _set_prices(page: Page, price: int) -> None:
+    minimum = _minimum_sale_quantity(price)
     await page.locator('input[name="market[]"][value="dome"]').check()
     await page.locator('input[name="market[]"][value="supply"]').check()
     await page.evaluate(
@@ -225,9 +230,9 @@ async def _set_prices(page: Page, price: int) -> None:
           module.itemSupplyAmtSectionTbl.updateData({idx:0,key:'start',val:'1'});
           module.itemSupplyAmtSectionTbl.updateData({idx:0,key:'amt',val:String(data.price)});
         }""",
-        {"price": price, "minimum": DOMEGGOK_MIN_SALE_QUANTITY},
+        {"price": price, "minimum": minimum},
     )
-    if await page.locator("#lUnitQty").input_value() != str(DOMEGGOK_MIN_SALE_QUANTITY) or await page.locator("#lAmt1").input_value() != str(price):
+    if await page.locator("#lUnitQty").input_value() != str(minimum) or await page.locator("#lAmt1").input_value() != str(price):
         raise RuntimeError("도매꾹 판매단가가 전송값에 반영되지 않았습니다.")
     if await page.locator("#lSupplyQty").input_value() != "1" or await page.locator("#lSupplyAmt").input_value() != str(price):
         raise RuntimeError("도매매 판매단가가 전송값에 반영되지 않았습니다.")
